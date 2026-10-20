@@ -1,4 +1,4 @@
-# In-process ares SNES bridge
+# In-process ares SNES / Famicom bridge
 
 **0.4.0 correction:** the bridge now requires a 64-byte `ipl.rom` in the firmware
 directory and includes it in state identity (bridge revision 2). The original
@@ -7,10 +7,16 @@ the verified bytes from the user's own image; tests use a self-authored SPC700
 idle program. See [image import](image-import.md). No Nintendo IPL bytes are
 compiled into the application.
 
-`portable/core/ares_core.h` implements the agreed `clover::AresCore` API using
+`portable/core/ares_core.h` implements the internal `clover::AresCore` API using
 ares commit `9408cb43d4948fc3ea6e152a307a34348df3fe04`. Emulation is linked into
 the application: no external emulator, desktop UI, SDK, firmware download,
 SDL, Qt, GTK, or runtime resource directory is required by this target.
+
+The Rust application uses `portable/core/ares_c_api.h`, implemented by
+`ares_c_api.cpp`, through the safe, thread-affine wrapper in `rust/src/ares.rs`.
+It does not call the C++ API directly. ares and SDL are separate ignored
+checkouts, not Git submodules; `scripts/bootstrap-portable.py` fetches and
+verifies their pinned revisions from `dependencies.lock.json`.
 
 ## Build integration
 
@@ -28,13 +34,14 @@ libraries; dl where needed).
 `CLOVER_ARES_SOURCE_DIR` can override the default `third_party/ares` source path;
 it must refer to the pinned revision, not an arbitrary newer checkout.
 
-Only the SFC core, six required processor components, shared ares runtime,
-nall utility implementation and libco are compiled. Other emulation cores,
+Only the SFC and FC cores, their required processor/audio/cartridge components,
+shared ares runtime, nall utility implementation, libco, and FC's required ymfm
+dependencies are compiled. Other emulation cores,
 JIT implementation, desktop UI, mia database/archive importers and mia firmware
 resources are not linked. At configure time, CMake extracts upstream's exact
 SFC heuristic analyzer implementation (with a small standalone declaration
-adapter), embeds `ares/System/Super Famicom/boards.bml`, and embeds the two
-crosshair PNGs needed by the SFC controller translation unit. Generated files
+adapter), embeds `ares/System/Super Famicom/boards.bml`, and embeds the
+SFC/FC crosshair PNGs needed by the controller translation units. Generated files
 stay in the build tree; upstream is not modified. No build tool is downloaded.
 
 ## Calling and data contract
@@ -56,7 +63,8 @@ that loaded the ROM. This is required by libco's coroutine context. Concurrent
 operations on an instance are unsupported. The global ares platform/machine is
 reserved at load and released on unload; a second loaded instance is rejected.
 
-`runFrame` drives the real SNES scheduler and waits for the video-worker callback.
+`runFrame` drives the loaded system's scheduler; SNES rendering waits for the
+video-worker callback.
 Pixels are packed, opaque `0xFFRRGGBB`, and dimensions come from ares's processed
 viewport; do not assume 256x224 (the smoke test produces 564x242). Audio is
 interleaved stereo float, clipped to [-1,1], resampled by ares to 48000 Hz, and
@@ -72,13 +80,20 @@ entropy are enabled.
 
 ## ROMs and firmware
 
-Only raw `.sfc` and `.smc` files are accepted (case-insensitive); the optional
+SNES loading accepts raw `.sfc` and `.smc` files (case-insensitive); the optional
 512-byte copier header is stripped by the upstream analyzer. `.sfrom` returns
 an explicit conversion-needed error. There is no automatic container conversion,
 archive reading, patching, interleave conversion or local manifest override.
 Headers are scored, generated board IDs must match the embedded upstream board
 table, and missing ROM/firmware parts fail rather than silently booting zeros.
 Maximum input ROM size is 16 MiB.
+
+NES/Famicom loading accepts supported iNES 1.0 `.nes` cartridges. Supported
+mappers are 0, 1, 2, 3, 4, 9, and 184, with additional board/size checks;
+NES 2.0, trainers, unsupported board variants, and Famicom Disk System are
+rejected. See `portable/core/nes_cartridge.h`, `rust/src/nes.rs`, and
+[the NES/Famicom migration notes](rust-migration.md) for the supported scope.
+NES cartridges do not require the SNES SMP IPL.
 
 Most cartridges require no external firmware. For firmware-dependent boards,
 provide your own legally obtained dumps in the explicit firmware directory.
@@ -123,9 +138,10 @@ No promise is made of cross-compiler, cross-OS, cross-architecture, or future
 bridge compatibility. State checksums detect corruption, not maliciously crafted
 states; as with the upstream emulator, only load trusted state files.
 
-## Standalone smoke test
+## Standalone smoke tests
 
 ```sh
+python3 scripts/bootstrap-portable.py
 cmake -S portable/core -B .build/ares-bridge -DCMAKE_BUILD_TYPE=Release -DCLOVER_BUILD_TESTS=ON
 cmake --build .build/ares-bridge -j 6
 ctest --test-dir .build/ares-bridge --output-on-failure
@@ -137,6 +153,10 @@ stereo audio (the program does not upload an SPC music program), SRAM contents,
 save/load state roundtrip, corrupt and wrong-ROM state rejection, copier-header
 normalization, unsupported SFROM and one-session enforcement. Test artifacts are
 retained for inspection. No extracted Nintendo game/firmware is executed.
+
+The separate generated NES test checks video/audio, controller input, state
+replay, SRAM persistence, PAL startup, mapper initialization, invalid cartridge
+rejection, and single-session enforcement without commercial ROM fixtures.
 
 Validated on macOS arm64 with AppleClang 21, Release build. Windows and Linux
 paths are implemented but not compiled or runtime-tested in this environment.

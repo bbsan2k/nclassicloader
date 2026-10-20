@@ -1,9 +1,41 @@
 # Classic Menu — Clover reconstruction
 
+[![Rust](https://img.shields.io/badge/frontend-Rust-dea584?logo=rust)](rust/)
+[![ares](https://img.shields.io/badge/emulation-ares-7057ff)](https://github.com/ares-emulator/ares)
+[![SDL3](https://img.shields.io/badge/platform-SDL3-194b8d)](https://github.com/libsdl-org/SDL)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![CI configured](https://img.shields.io/badge/CI-GitHub_Actions-2088ff?logo=githubactions&logoColor=white)](.github/workflows/portable.yml)
+[![Vibe coded](https://img.shields.io/badge/vibe-coded-ff69b4)](#about-this-project)
+[![REA assisted](https://img.shields.io/badge/reverse_engineering-REA-00897b)](docs/reverse-engineering.md)
+
 Classic Menu is a Rust desktop frontend and read-only importer for locally
 supplied SNES Classic, NES Classic, and Famicom images. The SNES/NES execution
 cores remain ares C++ behind a narrow C ABI; the launcher, image/profile import,
-menu, controls, settings, audio pacing, saves, and packaging are Rust.
+menu, controls, settings, audio pacing, and saves are Rust. Python scripts handle
+build orchestration and packaging.
+
+## About this project
+
+**This is a vibe-coded reconstruction**, developed with AI coding assistance.
+It used **REA (Reverse Engineer Anything)** for static reverse engineering,
+including Ghidra-backed inspection of the original native binaries, alongside
+direct inspection of image resources and LuaJIT bytecode. REA informed the
+reconstruction; it is **not a runtime or build dependency**. The
+[investigation ledger](docs/reverse-engineering.md) distinguishes evidence from
+inferences and remaining unknowns.
+
+This is an experimental, unofficial project—not Nintendo's original menu engine,
+an exact behavior/pixel-parity claim, or a Nintendo-affiliated product. AI-generated
+code and passing tests are not substitutes for review or hardware validation.
+
+## Quick start
+
+Build on the target desktop OS (requires Rust stable, CMake 3.28+, a C/C++
+toolchain, Python 3, Git, and Ninja for a fresh default build):
+
+```sh
+python3 scripts/build-rust-desktop.py
+```
 
 On macOS, launch the packaged app with:
 
@@ -11,7 +43,12 @@ On macOS, launch the packaged app with:
 open "dist/Classic Menu.app"
 ```
 
-Windows and Linux builds are packaged separately for their native platforms.
+Windows and Linux executables are packaged in `dist/rust-desktop/windows/` and
+`dist/rust-desktop/linux/`. Archives for all desktop platforms are written under
+`dist/rust-desktop/`. The [GitHub Actions workflow](.github/workflows/portable.yml)
+is configured to build/test/package all three; Windows/Linux runtime behavior
+remains unverified.
+
 The desktop packages contain application code and license notices, not game
 images, firmware, ROMs, or extracted console assets.
 
@@ -69,12 +106,29 @@ python3 scripts/build-rust-desktop.py
 ```
 
 `python3 scripts/build-portable.py` remains a compatibility alias. The build
-requires CMake 3.28+, a Rust stable toolchain, Python 3, Git, and internet access
-for the first pinned-source bootstrap. It does not install system software.
+needs internet access for its first dependency fetch. The build scripts do not
+install system software; host prerequisites must already be installed. See the
+[platform build guide](docs/portable-build.md) and
+[CI prerequisites](.github/workflows/portable.yml), especially for Linux.
 macOS packages are ad-hoc signed and not notarized; Windows packages are not
 installers. Linux may require host graphics/audio libraries.
 
-Useful validation commands:
+### How ares and SDL are included
+
+They are **not Git submodules**. `scripts/bootstrap-portable.py` fetches separate,
+ignored checkouts under `third_party/ares/` and `third_party/SDL/`, pinned by
+[`dependencies.lock.json`](dependencies.lock.json). Existing checkouts must match
+the pinned revisions and have no local modifications. CMake builds static
+libraries; Rust links them through `rust/build.rs`:
+
+- **ares:** SNES/Famicom emulation through `portable/core/ares_c_api.h` and the
+  thread-affine Rust wrapper in `rust/src/ares.rs`; no external emulator process.
+- **SDL3:** windowing, rendering, audio, gamepads, and file dialogs through Rust
+  SDL bindings. A small Objective-C++ AppKit adapter supplies the macOS menu bar.
+
+### Validation
+
+After building the native dependencies, run (POSIX shell syntax):
 
 ```sh
 cargo fmt --manifest-path rust/Cargo.toml --check
@@ -85,10 +139,36 @@ CLOVER_NATIVE_BUILD_DIR="$PWD/.build/native" cargo clippy --locked \
 python3 scripts/test_rust_importer.py
 ```
 
+The last command requires local SNES images. Portable library tests can run
+without those images or the native libraries:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml
+```
+
+Local macOS checks have passed 44 native-app Rust tests, Clippy, three native
+CTest targets, six SNES profile imports, 126 SFROM round trips, and image-backed
+NES/Famicom, UI, suspend, audio-buffering, and relocated-package checks. These
+are scoped smoke/regression results, not full gameplay or original-console parity.
+
 The full importer/UI/audio/controller regression scripts and their local-image
 requirements are listed in [`docs/rust-migration.md`](docs/rust-migration.md).
 Windows/Linux CI builds are configured, but runtime behavior on those platforms
 and physical-device behavior remain unverified.
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| [`rust/`](rust/) | Frontend, importer, ares wrapper, tests, and redistributable launcher assets |
+| [`portable/core/`](portable/core/) | C++ ares integration, C ABI, and generated-ROM smoke tests |
+| [`portable/platform/`](portable/platform/) | Small macOS native-menu adapter |
+| [`scripts/`](scripts/) | Dependency bootstrap, builds, packaging, and local-image audits |
+| [`docs/`](docs/) | Architecture, controls, reverse-engineering notes, and validation limits |
+| `third_party/` | Ignored pinned upstream checkouts fetched during bootstrap |
+
+`.build/`, `dist/`, `analysis/`, local console images, caches, and saves are
+deliberately excluded from Git. Do not publish generated console-content artifacts.
 
 ## Licensing and content
 

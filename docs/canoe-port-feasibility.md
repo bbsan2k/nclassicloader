@@ -1,5 +1,10 @@
 # Canoe versus a native open-source core
 
+> Historical assessment: the recommendation below has since been implemented
+> using ares behind a C ABI and the Rust/SDL3 frontend. See
+> [the current integration](ares-core-integration.md). Statements about work not
+> yet performed describe the assessment at that time, not today's build.
+
 ## Recommendation
 
 Keep the Clover recreation as the frontend and use an existing SNES core. For a

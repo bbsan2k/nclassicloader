@@ -5,6 +5,13 @@ runtime. It documents evidence and reconstruction boundaries; it is not a port
 of Nintendo's menu engine or a runtime behavioral specification. Related scene
 and resource observations are summarized in [Clover visual analysis](clover-visuals.md).
 
+The application is a vibe-coded, AI-assisted reconstruction. REA (Reverse
+Engineer Anything) was used for static analysis, including Ghidra-backed
+disassembly/decompilation. REA is a development/research tool, not a dependency
+of the app or its build. The observations below do not establish full original
+console behavior or justify treating generated implementation code as original
+Nintendo source.
+
 ## Scope and status
 
 | Question | Status |
