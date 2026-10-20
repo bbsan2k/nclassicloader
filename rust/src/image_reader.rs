@@ -688,7 +688,7 @@ fn tar(mut source: Source) -> ReadResult<Files> {
             }
             path = normalize(&path)?;
             require(
-                ![b'x', b'g', b'S'].contains(&kind),
+                !b"xgS".contains(&kind),
                 "PAX and sparse tar extensions are unsupported; use a standard GNU/ustar archive",
             )?;
             if kind == 0 || kind == b'0' {
@@ -700,10 +700,7 @@ fn tar(mut source: Source) -> ReadResult<Files> {
                     gz.skip(size, "truncated tar member")?;
                 }
             } else {
-                require(
-                    [b'1', b'2', b'3', b'4', b'5', b'6', b'K'].contains(&kind),
-                    "unsupported tar member type",
-                )?;
+                require(b"123456K".contains(&kind), "unsupported tar member type")?;
                 gz.skip(size, "truncated tar member")?;
             }
         }
