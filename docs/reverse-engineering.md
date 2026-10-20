@@ -1,10 +1,9 @@
 # Investigation ledger
 
-**Update:** the second pass restores the actual Clover art, scene measurements,
-bitmap fonts, and selected bytecode-derived motion. See
-[Clover visual reconstruction](clover-visuals.md). The initial-pass observations
-below are retained for provenance; its SwiftUI presentation has been replaced by
-an AppKit scene renderer in the SwiftUI app shell.
+This ledger records static investigation of Clover resources and the Reed menu
+runtime. It documents evidence and reconstruction boundaries; it is not a port
+of Nintendo's menu engine or a runtime behavioral specification. Related scene
+and resource observations are summarized in [Clover visual analysis](clover-visuals.md).
 
 ## Scope and status
 
@@ -14,7 +13,7 @@ an AppKit scene renderer in the SwiftUI app shell.
 | Retrieve supplied images | Answered: cloned `https://github.com/mentalblank/SNES-Mini-Kernels` into `SNES-Mini-Kernels/` |
 | Identify game-selection menu | Answered: shell wrapper → `ReedPlayer-Clover` → compiled LuaJIT UI resources |
 | Disassemble native loader | Partial: ARM `main` disassembled and decompiled; not every engine function |
-| Reconstruct macOS app | Partial: buildable native catalog/browser/launcher preview, not behavioral parity |
+| Recover menu behavior | Partial: native entry point inspected; full menu state and runtime remain unknown |
 | Exact menu state machine / save / replay | Unresolved: compiled LuaJIT control flow and console runtime need further work |
 
 ## Artifact identity
@@ -74,7 +73,7 @@ of recorded unknown entries does not mean this investigation has no unknowns.
   and atomic command-file terminology. **These are leads, not proven control flow.**
 - `usr/share/games/CLV-*/CLV-*.desktop` holds catalog names, console `Exec`, art
   paths, codes, player counts, dates, sort keys, and copyrights. There are 21
-  catalog entries. The macOS reconstruction uses metadata, never console `Exec`.
+  catalog entries. The frontends consume metadata and never execute console `Exec`.
 
 ## Extraction limitations
 
@@ -88,32 +87,18 @@ bootable root filesystem. Use a case-sensitive filesystem for a future full dump
 
 ## Reconstruction choices and remaining gaps
 
-`Sources/MenuCore/GameLibrary.swift` implements strict desktop-entry loading,
-local artwork paths, deterministic sorts, and wraparound navigation.
-`Sources/ClassicMenu/ClassicMenuApp.swift` supplies a new SwiftUI renderer,
-selection persistence, local launch history, and explicit external emulator
-document opening. UI proportions, navigation animation, and comparator directions
-are reconstruction choices, not proven copies of the original LuaJIT logic.
+The Rust frontend implements image import, local asset paths, and catalog
+navigation. Its UI behavior is a reconstruction; proportions, navigation
+animation, and comparator details are not asserted to be copies of the original
+LuaJIT control flow.
 
-No attempt is made to execute ARM Linux code as a macOS app, interpret LuaJIT
-bytecode as native instructions, claim SFROM files are standard SNES ROMs, or
-fabricate working console save/replay behavior. Stock game artwork is copied only
-into a local build; ROM files remain outside the app.
+No attempt is made to execute ARM Linux code, interpret LuaJIT bytecode as native
+instructions, claim SFROM files are standard SNES ROMs, or fabricate console
+save/replay behavior. Console-derived assets remain local user-supplied data and
+are not included in the source repository or default code-only packages.
 
-Tests cover parsing, path/code validation, navigation, sorting, a temporary
-library, and the actual extracted 21-game catalog. Tests do not prove original
-console parity. Emulator launching and visual fidelity still require manual
-validation. Further work needs static LuaJIT bytecode decoding and, for runtime
-parity, a suitable console/runtime observation setup.
-
-## Local verification
-
-- `swift test`: six tests passed, including the extracted 21-entry catalog.
-- `python3 scripts/build-app.py`: release build succeeded on Apple Silicon;
-  local ad-hoc signing succeeded.
-- `codesign --verify --deep --strict`: passed for `dist/Classic Menu.app`.
-- Package inspection: exactly 21 desktop entries; no `.sfrom`, `.sfc`, `.smc`,
-  `.img`, or `.hsqs` payloads inside the app.
-- Launch smoke test: the built executable remained alive for four seconds with
-  no reported stderr, then the test terminated its owned process. This is a
-  startup test, not a screenshot comparison or proof of interactive behavior.
+Current importer/core test coverage and its limits are recorded in
+`docs/rust-migration.md`, `docs/image-import.md`, and `docs/portable-build.md`.
+Those tests do not establish original-console parity. Further work needs static
+LuaJIT bytecode decoding and, for runtime parity, a suitable console/runtime
+observation setup.

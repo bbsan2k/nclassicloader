@@ -3,12 +3,16 @@
 
 mod checks;
 mod controls;
+mod gamepad;
+mod icon;
 mod launcher;
 mod suspend;
+mod timing;
 mod toolbar;
 
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
     io::BufReader,
@@ -90,6 +94,8 @@ struct TextLayout {
 }
 
 struct UiAssets {
+    nes: bool,
+    palette: Value,
     root: PathBuf,
     creator: TextureCreator<WindowContext>,
     textures: HashMap<String, Texture>,
@@ -106,6 +112,29 @@ struct UiAssets {
 }
 
 impl UiAssets {
+    fn palette_color(&self, key: &str, fallback: Color) -> Color {
+        let Some(channels) = self
+            .palette
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|value| value.len() == 4)
+        else {
+            return fallback;
+        };
+        let channel = |index: usize, default: u8| {
+            channels[index]
+                .as_u64()
+                .filter(|value| *value <= 255)
+                .map_or(default, |value| value as u8)
+        };
+        Color::RGBA(
+            channel(0, fallback.r),
+            channel(1, fallback.g),
+            channel(2, fallback.b),
+            channel(3, fallback.a),
+        )
+    }
+
     fn new(canvas: &Canvas<Window>, root: &Path, games: &[Game]) -> Result<Self, String> {
         let creator = canvas.texture_creator();
         let layout = read_json(&root.join("skin/layout.json"))?;
@@ -154,6 +183,8 @@ impl UiAssets {
                 ))
         };
         let mut result = Self {
+            nes: theme.get("system").and_then(Value::as_str) == Some("nes"),
+            palette: theme.get("colors").cloned().unwrap_or_else(|| json!({})),
             root: root.to_path_buf(),
             creator,
             textures: HashMap::new(),
@@ -600,7 +631,7 @@ impl UiAssets {
                     continue;
                 }
                 let tile = row * 3 + column + 1;
-                let name = if row != 1 && column != 1 {
+                let name = if !self.nes && row != 1 && column != 1 {
                     format!("cursor_{tile}")
                 } else {
                     format!("cursor_game_{tile}")
@@ -636,6 +667,8 @@ struct Hit {
 struct AudioOut {
     stream: AudioStreamOwner,
     data: Vec<u8>,
+    core_rate: Option<u32>,
+    started: Cell<bool>,
 }
 
 enum DialogMessage {
@@ -664,7 +697,12 @@ impl AudioOut {
             .ok()?;
         let data = wav.buffer().to_vec();
         stream.resume().ok()?;
-        Some(Self { stream, data })
+        Some(Self {
+            stream,
+            data,
+            core_rate: None,
+            started: Cell::new(true),
+        })
     }
 
     fn core(rate: u32) -> Option<Self> {
@@ -678,21 +716,41 @@ impl AudioOut {
             .default_playback_device()
             .open_device_stream(Some(&spec))
             .ok()?;
-        stream.resume().ok()?;
         Some(Self {
             stream,
             data: Vec::new(),
+            core_rate: Some(rate),
+            started: Cell::new(false),
         })
     }
 
     fn clear(&self) {
+        if self.core_rate.is_some() {
+            let _ = self.stream.pause();
+            self.started.set(false);
+        }
         let _ = self.stream.clear();
     }
     fn queued(&self) -> usize {
         self.stream.queued_bytes().unwrap_or(0).max(0) as usize
     }
-    fn put_f32(&self, samples: &[f32]) {
-        let _ = self.stream.put_data_f32(samples);
+    fn put_f32(&self, samples: &[f32]) -> Result<(), String> {
+        self.stream
+            .put_data_f32(samples)
+            .map_err(|e| format!("Cannot queue game audio: {e}"))
+    }
+    fn needs_frames(&self) -> bool {
+        self.core_rate
+            .is_some_and(|rate| self.queued() < timing::audio_target_bytes(rate))
+    }
+    fn start_if_primed(&self) -> Result<(), String> {
+        if !self.started.get() && !self.needs_frames() {
+            self.stream
+                .resume()
+                .map_err(|e| format!("Cannot start game audio: {e}"))?;
+            self.started.set(true);
+        }
+        Ok(())
     }
     fn play_loop(&self) {
         if !self.data.is_empty() && self.queued() < self.data.len() / 2 {
@@ -737,12 +795,17 @@ struct App {
     music: Option<AudioOut>,
     click: Option<AudioOut>,
     core_audio: Option<AudioOut>,
+    silent_frame_deadline: Instant,
     core: Option<crate::ares::AresSession>,
     frame_texture: Option<Texture>,
     held: HashSet<Scancode>,
     pad_held: HashSet<PadButton>,
+    stick: gamepad::Stick,
+    pad_repeat: gamepad::Repeat,
     gamepad_subsystem: GamepadSubsystem,
     gamepad: Option<Gamepad>,
+    gamepad_id: Option<u32>,
+    pad_blocked: bool,
     fullscreen: bool,
     fullscreen_dirty: bool,
     window_title: String,
@@ -815,6 +878,10 @@ impl App {
             ids.into_iter()
                 .find_map(|id| gamepad_subsystem.open(id).ok())
         });
+        let gamepad_id = gamepad
+            .as_ref()
+            .and_then(|pad| pad.id().ok())
+            .map(u32::from);
         let mut app = Self {
             assets_path: assets_path.clone(),
             data_path: data_path.clone(),
@@ -845,12 +912,17 @@ impl App {
             music: None,
             click: None,
             core_audio: None,
+            silent_frame_deadline: Instant::now(),
             core: None,
             frame_texture: None,
             held: HashSet::new(),
             pad_held: HashSet::new(),
+            stick: gamepad::Stick::default(),
+            pad_repeat: gamepad::Repeat::default(),
             gamepad_subsystem,
             gamepad,
+            gamepad_id,
+            pad_blocked: gamepad_id.is_some(),
             fullscreen: false,
             fullscreen_dirty: false,
             window_title,
@@ -1082,7 +1154,7 @@ impl App {
     fn choose_image(&self, canvas: &Canvas<Window>) {
         let sender = self.dialog_sender.clone();
         let filters = [DialogFileFilter {
-            name: "SNES Classic image",
+            name: "NES / SNES Classic image",
             pattern: "hsqs;gz;img",
         }];
         if let Err(error) = dialog::show_open_file_dialog(
@@ -1165,6 +1237,11 @@ impl App {
             }
             return false;
         };
+        if !self.rom_extension_allowed(&rom) {
+            self.panel = "message".into();
+            self.message = "The selected ROM belongs to a different console system. Choose a compatible ROM in emulator settings.".into();
+            return false;
+        }
         let Some(core) = self.core.as_mut() else {
             match crate::ares::AresSession::new() {
                 Ok(core) => self.core = Some(core),
@@ -1204,6 +1281,7 @@ impl App {
         }
         self.panel.clear();
         self.playing = true;
+        self.silent_frame_deadline = Instant::now();
         self.preferences["history"][&game.id]["count"] = json!(self.record(&game.id, "count") + 1);
         self.preferences["history"][&game.id]["recent"] = json!(chrono_now());
         let _ = self.save_settings();
@@ -1246,8 +1324,12 @@ impl App {
         let game = self.selected().id.clone();
         let sender = self.dialog_sender.clone();
         let filters = [DialogFileFilter {
-            name: "Super Nintendo ROM",
-            pattern: "sfc;smc",
+            name: if self.art.nes {
+                "NES cartridge ROM"
+            } else {
+                "Super Nintendo ROM"
+            },
+            pattern: if self.art.nes { "nes" } else { "sfc;smc" },
         }];
         if let Err(error) = dialog::show_open_file_dialog(
             &filters,
@@ -1276,6 +1358,19 @@ impl App {
         }
     }
 
+    fn rom_extension_allowed(&self, path: &Path) -> bool {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if self.art.nes {
+            extension == "nes"
+        } else {
+            matches!(extension.as_str(), "sfc" | "smc")
+        }
+    }
+
     fn choose_firmware(&self, canvas: &Canvas<Window>) {
         let sender = self.dialog_sender.clone();
         dialog::show_open_folder_dialog(
@@ -1301,6 +1396,8 @@ impl App {
             match message {
                 DialogMessage::Rom { game, path, start } => {
                     if !safe_id(&game)
+                        || !self.games.iter().any(|entry| entry.id == game)
+                        || !self.rom_extension_allowed(&path)
                         || !fs::symlink_metadata(&path)
                             .is_ok_and(|metadata| metadata.file_type().is_file())
                     {
@@ -1372,12 +1469,17 @@ impl App {
             PadButton::LeftShoulder,
             PadButton::RightShoulder,
         ];
-        keyboard
+        (if self.pad_blocked {
+            0
+        } else {
+            self.stick.mask()
+        }) | keyboard
             .iter()
             .zip(gamepad)
             .enumerate()
             .fold(0, |mask, (index, (key, button))| {
-                if self.held.contains(key) || self.pad_held.contains(&button) {
+                if self.held.contains(key) || (!self.pad_blocked && self.pad_held.contains(&button))
+                {
                     mask | (1 << index)
                 } else {
                     mask
@@ -1386,9 +1488,17 @@ impl App {
     }
 
     fn pad_button_down(&mut self, button: PadButton, canvas: &Canvas<Window>) {
-        self.pad_held.insert(button);
+        if !self.pad_held.insert(button) {
+            return;
+        }
+        if self.pad_blocked {
+            return;
+        }
         if self.playing {
-            if button == PadButton::Guide {
+            if button == PadButton::Guide
+                || (self.pad_held.contains(&PadButton::Back)
+                    && self.pad_held.contains(&PadButton::Start))
+            {
                 self.leave_game();
             }
             return;
@@ -1407,12 +1517,71 @@ impl App {
             _ => None,
         };
         if let Some(key) = key {
+            if matches!(
+                key,
+                Scancode::Left | Scancode::Right | Scancode::Up | Scancode::Down
+            ) {
+                self.pad_repeat.pressed(key, Instant::now());
+            }
             self.handle_key(key, false, canvas);
+        }
+    }
+
+    fn poll_gamepad_navigation(&mut self, canvas: &Canvas<Window>) {
+        if self.pad_blocked {
+            let neutral = self.gamepad.as_ref().is_none_or(|pad| {
+                let buttons = [
+                    PadButton::South,
+                    PadButton::East,
+                    PadButton::West,
+                    PadButton::North,
+                    PadButton::Start,
+                    PadButton::Back,
+                    PadButton::Guide,
+                    PadButton::DPadLeft,
+                    PadButton::DPadRight,
+                    PadButton::DPadUp,
+                    PadButton::DPadDown,
+                    PadButton::LeftShoulder,
+                    PadButton::RightShoulder,
+                ];
+                !buttons.into_iter().any(|button| pad.button(button))
+                    && i32::from(pad.axis(sdl3::gamepad::Axis::LeftX)).abs() < 9000
+                    && i32::from(pad.axis(sdl3::gamepad::Axis::LeftY)).abs() < 9000
+            });
+            if !neutral {
+                return;
+            }
+            self.pad_blocked = false;
+            self.pad_held.clear();
+            self.stick.clear();
+            self.pad_repeat.clear();
+        }
+        if self.playing {
+            self.pad_repeat.clear();
+            return;
+        }
+        let direction = [
+            (PadButton::DPadUp, Scancode::Up),
+            (PadButton::DPadDown, Scancode::Down),
+            (PadButton::DPadLeft, Scancode::Left),
+            (PadButton::DPadRight, Scancode::Right),
+        ]
+        .into_iter()
+        .find_map(|(button, key)| self.pad_held.contains(&button).then_some(key))
+        .or_else(|| self.stick.menu_key());
+        if let Some((key, repeat)) = self.pad_repeat.poll(direction, Instant::now()) {
+            self.handle_key(key, repeat, canvas);
         }
     }
 
     fn leave_game(&mut self) {
         self.playing = false;
+        self.pad_blocked = self.gamepad.is_some();
+        self.held.clear();
+        self.pad_held.clear();
+        self.stick.clear();
+        self.pad_repeat.clear();
         if let Some(audio) = &self.core_audio {
             audio.clear();
         }
@@ -1429,11 +1598,6 @@ impl App {
         let Some(core) = self.core.as_mut() else {
             return Ok(());
         };
-        if let Some(audio) = &self.core_audio
-            && audio.queued() > core.audio_rate() as usize * 2 * 4 * 80 / 1000
-        {
-            return Ok(());
-        }
         if let Err(error) = core.run_frame(buttons) {
             self.playing = false;
             self.panel = "message".into();
@@ -1442,7 +1606,7 @@ impl App {
             return Ok(());
         }
         if let Some(audio) = &self.core_audio {
-            audio.put_f32(core.audio());
+            audio.put_f32(core.audio())?;
         }
         let Some(frame) = core.frame() else {
             return Ok(());
@@ -1476,6 +1640,32 @@ impl App {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    fn pump_game_audio(&mut self) -> Result<usize, String> {
+        if self.core_audio.is_none() {
+            let frames = timing::silent_frames_due(&mut self.silent_frame_deadline, Instant::now());
+            for _ in 0..frames {
+                self.run_game_frame()?;
+            }
+            return Ok(frames);
+        }
+        let mut frames = 0;
+        // The audio device is the emulation clock. NES runs near 60.10 Hz,
+        // independent of whether the display is 50, 60, 120 or 144 Hz. Fill a
+        // bounded reservoir, then present the newest frame; never clear or
+        // truncate continuous audio to correct a clock mismatch.
+        while frames < timing::MAX_AUDIO_CATCHUP_FRAMES
+            && self.playing
+            && self.core_audio.as_ref().is_some_and(AudioOut::needs_frames)
+        {
+            self.run_game_frame()?;
+            frames += 1;
+        }
+        if let Some(audio) = &self.core_audio {
+            audio.start_if_primed()?;
+        }
+        Ok(frames)
     }
 
     fn activate(&mut self, action: &str, canvas: &Canvas<Window>) {
@@ -1587,6 +1777,13 @@ impl App {
                 self.fullscreen_dirty = true;
             }
             "save" => self.request_suspend_save(),
+            "choose-suspend" => {
+                if self.has_pending() {
+                    self.request_suspend_save();
+                } else {
+                    self.resume_slot(canvas);
+                }
+            }
             "resume" => self.resume_slot(canvas),
             "lock" => self.toggle_suspend_lock(),
             "delete" => self.request_suspend_delete(),
@@ -1742,17 +1939,34 @@ impl App {
         } else {
             0.0
         };
-        for tile in -1..=1 {
-            let dest = FRect::new(-128.0 - offset + tile as f32 * 1536.0, 87.0, 1536.0, 552.0);
-            self.art
-                .draw_texture(canvas, "skin/wall.png", dest, None, Color::WHITE, true);
+        if self.art.nes {
+            self.rect(
+                canvas,
+                FRect::new(0.0, 87.0, 1280.0, 552.0),
+                self.art.palette_color(
+                    "background",
+                    if self.art.region == "Japan" {
+                        Color::RGB(235, 226, 213)
+                    } else {
+                        Color::RGB(0, 21, 61)
+                    },
+                ),
+            );
+            // The original dot atlas is a pixel-art mask, not a scrolling
+            // 32x32 wallpaper tile. Do not stretch its padding into a grid.
+        } else {
+            for tile in -1..=1 {
+                let dest = FRect::new(-128.0 - offset + tile as f32 * 1536.0, 87.0, 1536.0, 552.0);
+                self.art
+                    .draw_texture(canvas, "skin/wall.png", dest, None, Color::WHITE, true);
+            }
         }
         self.art.sprite(
             canvas,
             "caption_title",
             640.0,
             178.0 + title_shift,
-            1044.0,
+            if self.art.nes { 1026.0 } else { 1044.0 },
             66.0,
             Color::WHITE,
         );
@@ -1776,7 +1990,7 @@ impl App {
         for i in self.scroll_current.floor() as i32 - 3..=self.scroll_current.floor() as i32 + 3 {
             let index = i.rem_euclid(self.games.len() as i32) as usize;
             let game = self.games[index].clone();
-            let firmware_locked = !self.firmware_ready(&game);
+            let firmware_locked = !self.firmware_ready(&game) || self.rom_path(&game).is_none();
             let x = (640.0 + (i as f32 - self.scroll_current) * gap).round();
             if !(-150.0..=1430.0).contains(&x) {
                 continue;
@@ -1789,10 +2003,10 @@ impl App {
                 } else {
                     "game_card"
                 },
-                x,
-                360.0 + card_shift,
-                252.0,
-                276.0,
+                x + if self.art.nes { 3.0 } else { 0.0 },
+                (if self.art.nes { 363.0 } else { 360.0 }) + card_shift,
+                if self.art.nes { 246.0 } else { 252.0 },
+                if self.art.nes { 270.0 } else { 276.0 },
                 Color::WHITE,
             );
             self.art.fit_image(
@@ -1821,13 +2035,18 @@ impl App {
             } else {
                 "icon_1P"
             };
+            let player_icon = if self.art.nes && active {
+                format!("{player_icon}_active")
+            } else {
+                player_icon.to_owned()
+            };
             self.art.sprite(
                 canvas,
-                player_icon,
-                x + 81.0,
-                462.0 + card_shift,
-                66.0,
-                42.0,
+                &player_icon,
+                x + if self.art.nes { 76.5 } else { 81.0 },
+                (if self.art.nes { 463.5 } else { 462.0 }) + card_shift,
+                if self.art.nes { 57.0 } else { 66.0 },
+                if self.art.nes { 33.0 } else { 42.0 },
                 Color::WHITE,
             );
             for slot in 0..4 {
@@ -1852,7 +2071,7 @@ impl App {
                 self.art.sprite(
                     canvas,
                     &name,
-                    x - 96.0 + slot as f32 * 24.0,
+                    x - (if self.art.nes { 88.0 } else { 96.0 }) + slot as f32 * 24.0,
                     468.0 + card_shift,
                     18.0,
                     18.0,
@@ -1936,25 +2155,25 @@ impl App {
             (
                 "icon_direction_up_light",
                 self.art.translate("sys_gametitlelist_hud_Menu", "Menu"),
-                36.0,
+                if self.art.nes { 30.0 } else { 36.0 },
                 "settings",
             ),
             (
                 "icon_direction_down_light",
                 self.art.translate("sys_gametitlelist_hud_Resume", "Resume"),
-                36.0,
+                if self.art.nes { 30.0 } else { 36.0 },
                 "resume-panel",
             ),
             (
                 "icon_select_light",
                 self.art.translate("sys_gametitlelist_hud_Sort", "Sort"),
-                96.0,
+                if self.art.nes { 90.0 } else { 96.0 },
                 "sort",
             ),
             (
                 "icon_start_light",
                 self.art.translate("sys_gametitlelist_hud_Decide", "Start"),
-                84.0,
+                if self.art.nes { 78.0 } else { 84.0 },
                 "start",
             ),
         ];
@@ -1982,16 +2201,22 @@ impl App {
                 canvas,
                 icon,
                 x + icon_width * 0.5,
-                609.0,
+                if self.art.nes { 612.0 } else { 609.0 },
                 *icon_width,
-                if *icon_width == 36.0 { 36.0 } else { 30.0 },
+                if self.art.nes {
+                    if *icon_width == 30.0 { 30.0 } else { 24.0 }
+                } else if *icon_width == 36.0 {
+                    36.0
+                } else {
+                    30.0
+                },
                 Color::WHITE,
             );
             self.art.text(
                 canvas,
                 label,
                 x + icon_width + item_gap + label_width * 0.5,
-                609.0,
+                if self.art.nes { 612.0 } else { 609.0 },
                 "s",
                 self.art.hud_color,
                 1200.0,
@@ -2018,6 +2243,17 @@ impl App {
             120.0,
             Color::WHITE,
         );
+        if self.art.nes && self.art.region != "Japan" {
+            self.art.sprite(
+                canvas,
+                "menubar_U_2",
+                640.0,
+                36.0,
+                480.0,
+                120.0,
+                Color::WHITE,
+            );
+        }
         let icons = [
             "btn_display",
             "btn_option",
@@ -2121,7 +2357,14 @@ impl App {
                     bx,
                     position,
                     "s",
-                    Color::WHITE,
+                    self.art.palette_color(
+                        "caption",
+                        if self.art.nes {
+                            Color::BLACK
+                        } else {
+                            Color::WHITE
+                        },
+                    ),
                     1200.0,
                     true,
                 );
@@ -2336,7 +2579,7 @@ impl App {
                     "Escape: pause and pick a suspend slot; F5/F8: save/load".into(),
                 ],
                 _ if self.panel == "profiles" => vec![
-                    "Choose a verified cached profile, or import another SNES Classic image."
+                    "Choose a verified cached profile, or import another NES / SNES Classic image."
                         .into(),
                     "The source image is read-only; extracted programs are never run.".into(),
                 ],
@@ -2437,16 +2680,29 @@ impl App {
 
     fn render_game(&mut self, canvas: &mut Canvas<Window>) {
         let mode = self.display_mode();
-        let width = if mode == 2 { 720.0 * 8.0 / 7.0 } else { 960.0 };
+        let width = if mode == 2 {
+            if self.art.nes {
+                768.0
+            } else {
+                720.0 * 8.0 / 7.0
+            }
+        } else {
+            960.0
+        };
         let left = (1280.0 - width) * 0.5;
         if let Some(texture) = self.frame_texture.as_ref() {
             let _ = canvas.copy(texture, None, FRect::new(left, 0.0, width, 720.0));
             if mode == 0 {
                 canvas.set_blend_mode(BlendMode::Blend);
                 canvas.set_draw_color(Color::RGBA(0, 0, 0, 64));
-                for row in 0..224 {
-                    let _ =
-                        canvas.fill_rect(FRect::new(left, row as f32 * 720.0 / 224.0, width, 1.0));
+                let rows = if self.art.nes { 240 } else { 224 };
+                for row in 0..rows {
+                    let _ = canvas.fill_rect(FRect::new(
+                        left,
+                        row as f32 * 720.0 / rows as f32,
+                        width,
+                        1.0,
+                    ));
                 }
             }
         }
@@ -2471,17 +2727,27 @@ impl App {
         stage.set_blend_mode(BlendMode::None);
         stage.set_scale_mode(ScaleMode::Linear);
         canvas.set_blend_mode(BlendMode::Blend);
-        let mut next_frame = Instant::now();
+        let mut pacer = timing::FramePacer::new(canvas, frame_limit == 0);
         let mut rendered = 0usize;
         while running {
             for event in events.poll_iter() {
                 match event {
                     Event::Quit { .. } => running = false,
+                    Event::Window {
+                        win_event: sdl3::event::WindowEvent::FocusLost,
+                        ..
+                    } => {
+                        self.held.clear();
+                        self.pad_held.clear();
+                        self.stick.clear();
+                        self.pad_repeat.clear();
+                        self.pad_blocked = self.gamepad.is_some();
+                    }
                     #[cfg(target_os = "macos")]
                     Event::User { type_, code, .. }
                         if type_ == unsafe { clover_native_menu_event() } =>
                     {
-                        if self.playing {
+                        if self.playing && code != 8 {
                             self.leave_game();
                         }
                         match code {
@@ -2554,51 +2820,73 @@ impl App {
                             .gamepad_subsystem
                             .open(sdl3::sys::joystick::SDL_JoystickID(which))
                             .ok();
+                        self.gamepad_id = self
+                            .gamepad
+                            .as_ref()
+                            .and_then(|pad| pad.id().ok())
+                            .map(u32::from);
+                        self.pad_blocked = self.gamepad.is_some();
                     }
                     Event::ControllerDeviceRemoved { which, .. }
-                        if self
-                            .gamepad
-                            .as_ref()
-                            .is_some_and(|pad| pad.id().is_ok_and(|id| id == which)) =>
+                        if self.gamepad_id == Some(which) =>
                     {
+                        if self.playing {
+                            self.leave_game();
+                        }
                         self.gamepad = None;
                         self.pad_held.clear();
-                    }
-                    Event::ControllerButtonDown { which, button, .. }
-                        if self
+                        self.stick.clear();
+                        self.pad_repeat.clear();
+                        self.gamepad = self.gamepad_subsystem.gamepads().ok().and_then(|ids| {
+                            ids.into_iter()
+                                .filter(|id| id.0 != which)
+                                .find_map(|id| self.gamepad_subsystem.open(id).ok())
+                        });
+                        self.gamepad_id = self
                             .gamepad
                             .as_ref()
-                            .is_some_and(|pad| pad.id().is_ok_and(|id| id == which)) =>
+                            .and_then(|pad| pad.id().ok())
+                            .map(u32::from);
+                        self.pad_blocked = self.gamepad.is_some();
+                    }
+                    Event::ControllerAxisMotion {
+                        which, axis, value, ..
+                    } if self.gamepad_id == Some(which) => match axis {
+                        sdl3::gamepad::Axis::LeftX => self.stick.update(0, value),
+                        sdl3::gamepad::Axis::LeftY => self.stick.update(1, value),
+                        _ => {}
+                    },
+                    Event::ControllerButtonDown { which, button, .. }
+                        if self.gamepad_id == Some(which) =>
                     {
                         self.pad_button_down(button, canvas);
                     }
                     Event::ControllerButtonUp { which, button, .. }
-                        if self
-                            .gamepad
-                            .as_ref()
-                            .is_some_and(|pad| pad.id().is_ok_and(|id| id == which)) =>
+                        if self.gamepad_id == Some(which) =>
                     {
                         self.pad_held.remove(&button);
                     }
                     Event::DropFile { filename, .. } => {
                         let path = PathBuf::from(filename);
-                        let extension = path
-                            .extension()
-                            .and_then(|value| value.to_str())
-                            .unwrap_or_default();
-                        if matches!(extension.to_ascii_lowercase().as_str(), "sfc" | "smc") {
+                        if self.rom_extension_allowed(&path) {
                             let game = self.selected().id.clone();
                             self.preferences["roms"][game] = json!(path.to_string_lossy());
                             let _ = self.save_settings();
                             self.begin_game(canvas);
                         } else {
                             self.panel = "message".into();
-                            self.message = "Drop a compatible .sfc or .smc ROM.".into();
+                            self.message = if self.art.nes {
+                                "Drop a compatible .nes cartridge ROM."
+                            } else {
+                                "Drop a compatible .sfc or .smc ROM."
+                            }
+                            .into();
                         }
                     }
                     _ => {}
                 }
             }
+            self.poll_gamepad_navigation(canvas);
             self.process_dialogs(canvas);
             if self.title_dirty {
                 self.title_dirty = false;
@@ -2615,7 +2903,7 @@ impl App {
                 }
             }
             if self.playing && self.panel.is_empty() {
-                self.run_game_frame()?;
+                self.pump_game_audio()?;
             } else if self.sound
                 && let Some(music) = &self.music
             {
@@ -2649,13 +2937,7 @@ impl App {
             if frame_limit != 0 && rendered >= frame_limit {
                 running = false;
             }
-            next_frame += std::time::Duration::from_micros(16_667);
-            let now = Instant::now();
-            if next_frame > now {
-                std::thread::sleep(next_frame - now);
-            } else {
-                next_frame = now;
-            }
+            pacer.finish_frame();
             if self.panel == "notice" && self.scroll_started.elapsed().as_secs_f32() > 2.5 {
                 self.panel.clear();
             }
@@ -2851,6 +3133,8 @@ pub fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
     let mut preview_hover = None;
     let mut language = None;
     let mut exercise_ui = None;
+    let mut audit_games = None;
+    let mut exercise_audio = None;
     let mut frame_limit = std::env::var("CLOVER_RUST_WINDOW_FRAMES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -2873,6 +3157,8 @@ pub fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
             "--preview-hover" => preview_hover = value.to_str().map(str::to_owned),
             "--language" => language = value.to_str().map(str::to_owned),
             "--exercise-ui" => exercise_ui = Some(PathBuf::from(value)),
+            "--audit-games" => audit_games = Some(PathBuf::from(value)),
+            "--exercise-audio" => exercise_audio = Some(PathBuf::from(value)),
             "--frames" => {
                 frame_limit = value
                     .to_str()
@@ -2917,6 +3203,7 @@ pub fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let mut canvas = window.into_canvas();
+    let _ = icon::install(canvas.window_mut());
     canvas
         .set_logical_size(
             1280,
@@ -2941,6 +3228,12 @@ pub fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
     if let Some(output) = exercise_ui {
         return app.exercise_suspend(&mut canvas, &output);
+    }
+    if let Some(output) = exercise_audio {
+        return app.exercise_audio(&canvas, &output);
+    }
+    if let Some(output) = audit_games {
+        return app.audit_games(&output);
     }
     if frame_limit != 0 {
         if let Some(panel) = preview_panel {
@@ -3007,6 +3300,7 @@ pub fn smoke_test() -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let mut canvas = window.into_canvas();
+    let _ = icon::install(canvas.window_mut());
     canvas
         .set_logical_size(
             1280,

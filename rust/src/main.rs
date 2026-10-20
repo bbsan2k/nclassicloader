@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(feature = "native-app", target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use std::{env, fs, process};
 
 fn main() {
@@ -7,7 +12,7 @@ fn main() {
         if env::args_os().len() == 1 {
             let _ = sdl3::messagebox::show_simple_message_box(
                 sdl3::messagebox::MessageBoxFlag::ERROR,
-                "Classic Menu Rust",
+                "Classic Menu",
                 &error.to_string(),
                 None,
             );

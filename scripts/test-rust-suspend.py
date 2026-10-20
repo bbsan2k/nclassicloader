@@ -12,7 +12,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets", type=Path, required=True, help="Imported profile with a launchable default game")
-    parser.add_argument("--executable", type=Path, default=root / "rust/target/debug/clover-rust")
+    parser.add_argument("--executable", type=Path, default=root / "rust/target/release/clover-rust")
     parser.add_argument("--output", type=Path, default=root / ".build/rust-suspend-regression")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)

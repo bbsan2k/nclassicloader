@@ -236,6 +236,7 @@ impl App {
     }
 
     fn display_page(&mut self, canvas: &mut Canvas<Window>) {
+        let nes = self.art.nes;
         for (index, x) in [280.0, 640.0, 1000.0].into_iter().enumerate() {
             let action = format!("display:{index}");
             if self.focus == index || self.hover == action {
@@ -243,17 +244,22 @@ impl App {
                     canvas,
                     "cursor_option",
                     x,
-                    307.0,
+                    if nes { 396.0 } else { 307.0 },
                     360.0,
-                    297.0,
+                    if nes { 360.0 } else { 297.0 },
                     Color::WHITE,
                 );
             }
-            self.rect(
-                canvas,
-                FRect::new(x - 160.0, 180.0, 320.0, 180.0),
-                Color::BLACK,
-            );
+            if nes {
+                self.art
+                    .sprite(canvas, "tv_frame", x, 366.0, 318.0, 192.0, Color::WHITE);
+            } else {
+                self.rect(
+                    canvas,
+                    FRect::new(x - 160.0, 180.0, 320.0, 180.0),
+                    Color::BLACK,
+                );
+            }
             self.art.sprite(
                 canvas,
                 if index == 0 {
@@ -262,9 +268,15 @@ impl App {
                     "screen_pixel_perfect_preview"
                 },
                 x,
-                270.0,
-                if index == 2 { 192.0 } else { 220.0 },
-                168.0,
+                if nes { 366.0 } else { 270.0 },
+                if index == 2 {
+                    192.0
+                } else if nes {
+                    240.0
+                } else {
+                    220.0
+                },
+                if nes { 180.0 } else { 168.0 },
                 Color::WHITE,
             );
             let label = self.art.translate(
@@ -275,8 +287,16 @@ impl App {
                 ][index],
                 ["CRT Filter", "4:3", "Pixel Perfect"][index],
             );
-            self.art
-                .text(canvas, &label, x, 385.0, "m", Color::WHITE, 310.0, true);
+            self.art.text(
+                canvas,
+                &label,
+                x,
+                if nes { 493.0 } else { 385.0 },
+                "m",
+                Color::WHITE,
+                310.0,
+                true,
+            );
             self.art.sprite(
                 canvas,
                 if self.display_mode() == index {
@@ -285,13 +305,34 @@ impl App {
                     "radiobtn_off"
                 },
                 x,
-                426.0,
+                if nes { 540.0 } else { 426.0 },
                 36.0,
                 36.0,
                 Color::WHITE,
             );
-            self.hit(&action, FRect::new(x - 180.0, 158.0, 360.0, 297.0));
+            self.hit(
+                &action,
+                FRect::new(
+                    x - 180.0,
+                    if nes { 216.0 } else { 158.0 },
+                    360.0,
+                    if nes { 360.0 } else { 297.0 },
+                ),
+            );
             self.actions.push(action);
+        }
+        if nes {
+            self.art.text(
+                canvas,
+                "CRT uses a scanline approximation.",
+                640.0,
+                642.0,
+                "s",
+                Color::RGB(180, 180, 180),
+                1000.0,
+                false,
+            );
+            return;
         }
         self.art.sprite(
             canvas,
@@ -497,7 +538,7 @@ impl App {
 
     fn legal_lines(&self) -> Vec<String> {
         let text = if self.focus == 1 {
-            "Classic Menu — Rust reconstruction\n\nares: embedded SNES emulation core (ISC).\nSDL3: windowing, input, rendering and audio (zlib).\nRust frontend: Clover reconstruction contributors (MIT).\nBarlow launcher fonts: SIL Open Font License.\n\nFull third-party and Rust dependency license notices are included in this application's Resources/licenses folder.\n\nThe console artwork, fonts and language data are imported locally from the image selected by the user. They are not distributed with the application.".to_owned()
+            "Classic Menu — Rust reconstruction\n\nares: embedded NES/SNES emulation cores (ISC).\nSDL3: windowing, input, rendering and audio (zlib).\nRust frontend: Clover reconstruction contributors (MIT).\nBarlow launcher fonts: SIL Open Font License.\nXZ/liblzma: compressed image decoding (see packaged notices).\n\nFull third-party and Rust dependency license notices are included in this application's Resources/licenses folder.\n\nThe console artwork, fonts and language data are imported locally from the image selected by the user. They are not distributed with the application.".to_owned()
         } else {
             let mut text = self.art.translate("sys_copyright_games_HeadText", "");
             for game in &self.games {
@@ -697,11 +738,13 @@ impl App {
                 let backwards = matches!(key, Scancode::Left | Scancode::Up);
                 match page {
                     0 => {
-                        if key == Scancode::Down {
+                        if key == Scancode::Down && !self.art.nes {
                             self.focus = 3;
-                        } else if key == Scancode::Up {
+                        } else if key == Scancode::Up && !self.art.nes {
                             self.focus = self.display_mode();
-                        } else if self.focus < 3 {
+                        } else if self.focus < 3
+                            && matches!(key, Scancode::Left | Scancode::Right | Scancode::Tab)
+                        {
                             self.focus = (self.focus + if backwards { 2 } else { 1 }) % 3;
                         }
                     }

@@ -1,0 +1,12 @@
+{
+  "description": "Original Clover mark: four mint leaves around a play aperture. No console artwork or third-party assets.",
+  "shapes": [
+    {"kind": "rounded", "geometry": [0.08, 0.08, 0.84, 0.84, 0.20], "color": [20, 34, 48]},
+    {"kind": "circle", "geometry": [0.39, 0.39, 0.17], "color": [143, 249, 226]},
+    {"kind": "circle", "geometry": [0.61, 0.39, 0.17], "color": [94, 234, 210]},
+    {"kind": "circle", "geometry": [0.39, 0.61, 0.17], "color": [67, 194, 180]},
+    {"kind": "circle", "geometry": [0.61, 0.61, 0.17], "color": [76, 213, 191]},
+    {"kind": "circle", "geometry": [0.50, 0.50, 0.105], "color": [20, 34, 48]},
+    {"kind": "triangle", "geometry": [0.475, 0.435, 0.585, 0.50, 0.475, 0.565], "color": [236, 250, 247]}
+  ]
+}

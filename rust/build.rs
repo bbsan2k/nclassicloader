@@ -11,16 +11,29 @@ fn main() {
     for path in [
         root.join("portable/core"),
         root.join("third_party/SDL"),
-        root.join("third_party/zlib"),
         root.clone(),
     ] {
         println!("cargo:rustc-link-search=native={}", path.display());
     }
-    // The same pinned static libraries and platform dependencies as the CMake app.
+    for path in [
+        "portable/core/libclover_ares.a",
+        "portable/core/clover_ares.lib",
+        "libclover_native_menu.a",
+    ] {
+        let path = root.join(path);
+        if path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    // Pinned native static libraries used by the Rust desktop package.
     println!("cargo:rustc-link-lib=static=clover_ares");
-    println!("cargo:rustc-link-lib=static=SDL3");
-    println!("cargo:rustc-link-lib=static=z");
-    println!("cargo:rustc-link-lib=m");
+    let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if windows {
+        // SDL's archive name differs from its DLL import library on MSVC.
+        println!("cargo:rustc-link-lib=static=SDL3-static");
+    } else {
+        println!("cargo:rustc-link-lib=static=SDL3");
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-lib=static=clover_native_menu");
         println!("cargo:rustc-link-lib=c++");
@@ -45,13 +58,15 @@ fn main() {
         }
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,UniformTypeIdentifiers");
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreHaptics");
-    } else if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    } else if windows {
         for library in [
-            "ws2_32", "winmm", "ole32", "shell32", "shlwapi", "advapi32", "user32", "uuid",
+            "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32", "oleaut32", "version",
+            "uuid", "advapi32", "setupapi", "shell32", "shlwapi", "dinput8", "ws2_32",
         ] {
             println!("cargo:rustc-link-lib={library}");
         }
     } else {
+        println!("cargo:rustc-link-lib=m");
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=dl");

@@ -74,19 +74,13 @@ the frontend uses the new four-argument overload.
 
 ## Verification
 
-`clover_region_tests` prepared each of the six image skins and checked original
-atlas identity, correct locale/theme, all 21 titles' glyph coverage, main HUD
-glyph coverage, and distinct atlases for all three regions. No ROM is executed
-by this test. Fixtures stay under `.build/`.
+`scripts/test_rust_importer.py` validates all six SNES profiles, source
+immutability, cached-profile reuse, language tables, and profile migration.
+`scripts/test-rust-ui.py --assets PATH` checks rendered menu/language snapshots;
+those snapshots are not reference screenshots of the original console.
 
-`scripts/test_regions.py` adds actual frontend renders and checks prepared GUI
-resources byte-for-byte against their source archives. Its optional `--audit`
-argument invokes `clover_game_audit` for PCM/video checks; those results and their
-limits must not be inferred from successful GUI tests alone.
-
-All six GUI imports/renders passed. The actual rendered themes were inspected:
-[Europe](../analysis/regional-eur-menu.png), [USA](../analysis/regional-usa-menu.png),
-and [Japan](../analysis/regional-jpn-menu.png). Eight CTest targets pass, along
-with explicit stock-cache migration/tamper tests. Runtime game-audio results are
-120 passing combinations (20 per image) and six explicit missing-DSP1B failures
-for Mario Kart; see [audio audit](game-audio-audit.md) for durations and limits.
+The former C++-only regional importer/render tests have been retired after the
+Rust cutover. Historical image/game audit observations are retained in
+`analysis/` when available; see [audio audit](game-audio-audit.md) for its
+coverage and limitations. The ares game audit remains separate from importer
+and GUI validation.

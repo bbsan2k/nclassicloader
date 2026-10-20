@@ -11,6 +11,7 @@
 # Pinned upstream sources are acquired by scripts/bootstrap-portable.py.
 /third_party/ares/
 /third_party/SDL/
+# Historical local checkout, no longer used by the Rust importer/app.
 /third_party/zlib/
 
 # Console content, firmware, imported resources, saves, and captures.
@@ -21,6 +22,9 @@
 *.tar.gz
 *.tgz
 *.zip
+*.7z
+*.xz
+*.iso
 *.nes
 *.fds
 *.qd
@@ -32,15 +36,28 @@
 *.state
 *.sram
 *.sav
+*.srm
+*.suspend
+*.suspend-*
 *.png
 *.jpg
 *.jpeg
+*.webp
+*.gif
+*.bmp
 *.wav
+*.mp3
+*.ogg
+*.flac
 *.lng
 *.scn
 *.spriteanim
 *.fnt
 *.font
+*.otf
+*.ttf
+!rust/assets/fonts/Barlow-Regular.ttf
+!rust/assets/fonts/Barlow-SemiBold.ttf
 
 # Compiled outputs and local tooling state. OFL-licensed launcher TTFs are
 # intentional source resources, not compiled application binaries.

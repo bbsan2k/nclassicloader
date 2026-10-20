@@ -76,31 +76,33 @@ with tempfile.TemporaryDirectory(prefix="rust-importer-audit-", dir=root / ".bui
         raise RuntimeError("Verified cache was unnecessarily rewritten")
     if "Using verified cache" not in again.stderr:
         raise RuntimeError("Repeated import did not report verified cache reuse")
-    migration_cache = pathlib.Path(temporary) / "migration"
-    old = migration_cache / f"{observed[0][2]}-v4"
-    shutil.copytree(observed[0][3], old)
-    legacy = json.loads((old / "profile.json").read_text())
-    legacy["importerVersion"] = 4
-    for relative in list(legacy["files"]):
-        if relative.startswith("assets/skin/languages/") or relative == "assets/skin/languages.json":
-            (old / relative).unlink()
-            del legacy["files"][relative]
-    (old / "profile.json").write_text(json.dumps(legacy))
-    (old / "data/preferences.json").write_text(json.dumps({"selected": "CLV-P-SAAAE", "language": "eur_de"}))
-    (old / "data/saves").mkdir(exist_ok=True)
-    (old / "data/saves/migration-test.state").write_bytes(b"preserve user state")
-    subprocess.run([str(args.rust_executable.resolve()), "import-image", str(images[0].resolve()), str(migration_cache)],
-                   capture_output=True, text=True, check=True, timeout=300)
-    new = migration_cache / observed[0][3].name
-    if ((new / "data/saves/migration-test.state").read_bytes() != b"preserve user state"
-            or json.loads((new / "data/preferences.json").read_text())["language"] != "eur_de"
-            or not (old / "data/saves/migration-test.state").is_file()):
-        raise RuntimeError("v4 to v5 migration lost settings, saves, or original data")
-    upgraded = subprocess.run([str(args.rust_executable.resolve()), "list-profiles", str(migration_cache)],
-                              capture_output=True, text=True, check=True)
-    if len(json.loads(upgraded.stdout)) != 1:
-        raise RuntimeError("Launcher did not prefer v5 over duplicate v4 profile")
-    print("v4 to v5 settings/save preservation and profile upgrade selection passed")
+    for previous in (4, 5, 6):
+        migration_cache = pathlib.Path(temporary) / f"migration-v{previous}"
+        old = migration_cache / f"{observed[0][2]}-v{previous}"
+        shutil.copytree(observed[0][3], old)
+        legacy = json.loads((old / "profile.json").read_text())
+        legacy["importerVersion"] = previous
+        if previous == 4:
+            for relative in list(legacy["files"]):
+                if relative.startswith("assets/skin/languages/") or relative == "assets/skin/languages.json":
+                    (old / relative).unlink()
+                    del legacy["files"][relative]
+        (old / "profile.json").write_text(json.dumps(legacy))
+        (old / "data/preferences.json").write_text(json.dumps({"selected": "CLV-P-SAAAE", "language": "eur_de"}))
+        (old / "data/saves").mkdir(exist_ok=True)
+        (old / "data/saves/migration-test.state").write_bytes(b"preserve user state")
+        subprocess.run([str(args.rust_executable.resolve()), "import-image", str(images[0].resolve()), str(migration_cache)],
+                       capture_output=True, text=True, check=True, timeout=300)
+        new = migration_cache / observed[0][3].name
+        if ((new / "data/saves/migration-test.state").read_bytes() != b"preserve user state"
+                or json.loads((new / "data/preferences.json").read_text())["language"] != "eur_de"
+                or not (old / "data/saves/migration-test.state").is_file()):
+            raise RuntimeError(f"v{previous} migration lost settings, saves, or original data")
+        upgraded = subprocess.run([str(args.rust_executable.resolve()), "list-profiles", str(migration_cache)],
+                                  capture_output=True, text=True, check=True)
+        if len(json.loads(upgraded.stdout)) != 1:
+            raise RuntimeError("Launcher did not prefer the current profile over its legacy duplicate")
+        print(f"v{previous} settings/save preservation and profile upgrade selection passed")
     for path, old_hash in source_hashes.items():
         if hashlib.sha256(path.read_bytes()).hexdigest() != old_hash:
             raise RuntimeError(f"Rust import modified source image {path}")

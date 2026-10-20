@@ -1,6 +1,6 @@
-# Clover visual reconstruction — second pass
+# Clover visual reconstruction — static asset and scene analysis
 
-## Follow-up: text offsets (0.2.1)
+## Recovered layout and text observations
 
 The label pass corrects several real differences from the source layout:
 
@@ -15,17 +15,12 @@ The label pass corrects several real differences from the source layout:
   are positioned from half-widths.
 - `sys_hud.lua` prototype 2 confirms accumulation of measured child widths plus
   gaps, subtraction of the trailing gap, and centered positioning. Native label
-  measurement/anchor internals are not fully reverse engineered; the reconstruction
-  uses BMFont logical advances for these scene-anchored labels.
+  measurement/anchor internals are not fully reverse engineered; BMFont logical
+  advances provide the recovered label measurements.
 - The BMFont baseline and nominal font size are retained. Missing subset-font
   glyphs (notably some digits in m.font) are borrowed from the other shipped
   fonts, scaled by nominal size, and aligned to the primary baseline rather than
   replaced with differently spaced question marks.
-- New reconstruction panels center text by its glyph bounds, including overhangs
-  and descenders, rather than centering the entire padded line box and compensating
-  with ad hoc offsets. Source scene labels retain line-box anchors and positions.
-- The Back icon/label is centered as a complete group. The non-source label on
-  the lower console bar is removed; sorting is shown in its existing toast.
 - `lbl_component.lua` applies environment colors at startup. Static decoding of
   `colors_eur.lua` confirms white `font_dialog_text` and black
   `font_home_gametitle`, overriding the scene editor's gray tints. Tooltip text
@@ -33,16 +28,11 @@ The label pass corrects several real differences from the source layout:
 
 New decoded modules and their input hashes are retained in `analysis/text-layout/`.
 These are file-derived observations, not additional REA Evidence or original
-runtime captures. Alignment tests cover baselines, subset-font fallback, prompt
-group bounds, source label positions, and actual selected-button pixels at 1×/2×.
-The native-label implementation and every panel are still not claimed pixel-exact.
+runtime captures. They describe source resources and inferred layout; they do
+not establish pixel-identical behavior in either frontend.
 
 For the separate emulator backend question, see
 [Canoe port feasibility](canoe-port-feasibility.md).
-
-The first preview was a catalog browser, not a faithful representation of
-Clover's art. This pass replaces its system labels, green outline, cream backdrop,
-and generic controls with the assets actually shipped in the European firmware.
 
 ## Evidence and boundaries
 
@@ -64,8 +54,8 @@ native executable, shell script, or LuaJIT module was executed.
 ### Real sprite atlas, not redrawn approximations
 
 `resources/sprites/packed.json` supplies top-left pixel crop rectangles into
-`packed.png` (512×1024). `CloverAssets.swift` crops these using CoreGraphics and
-draws pixel art with nearest-neighbour interpolation. Used sprites include:
+`packed.png` (512×1024). The Rust frontend renders the imported atlas as image
+data rather than redrawing the original artwork. Used sprites include:
 
 - `menubar_U.png`, `menubar_L.png`: the grey plastic console bars and built-in logos.
 - `game_card.png`, `game_card_active.png`: inactive grey and active blue cards.
@@ -79,8 +69,8 @@ blurred neon controller texture `layout/asset/sprite/wallpaper/wall.png`. That i
 now drawn behind the cards at the scene's 1536×552 dimensions, with repeated
 horizontal scrolling. The scene's wallpaper animation has duration
 8.533333333333333 and texture X offset 0→1. Lua background code may alter that
-motion; this implementation uses the scene's authored default, not a claim of
-complete live wallpaper parity.
+  motion; the scene's authored default does not establish complete live wallpaper
+  behavior.
 
 ### Shipped bitmap fonts
 
@@ -119,10 +109,8 @@ coordinates are centered with Y upward; rendering converts them with
 | Controller HUD | center Y=609 |
 | Bottom bar | center (640,690), size 1296×120 |
 
-`scripts/clover_assets.py` derives positions and spacing from the scene rather
-than relying on the old preview's layout. Each build includes `Clover/layout.json`
-and `Clover/provenance.json`, with SHA-256 identities of its input art/scene/font
-resources. Some local placements, pointer scale, panel composition, and dialog
+Recovered scene measurements and source hashes are retained alongside imported
+profile assets. Some placements, pointer scale, panel composition, and dialog
 interaction remain reconstruction choices rather than direct scene replay.
 
 ## Recovered movement behavior
@@ -138,47 +126,31 @@ Static LuaJIT control-flow inspection found:
   movement/resizing of the cursor's nine pieces. Immediate changes bypass it.
 - The cursor uses a repeating **color tint**, not an alpha blink: white over
   0.5, hold 0.75, tint to RGBA (0.75,0.75,1,1) over 0.75, hold 0.25. Nominal total
-  2.25. Color interpolation ease is not explicit; the reconstruction uses linear
-  interpolation and a quantized tint cache.
+  2.25. Color interpolation ease is not explicit in the recovered evidence.
 - `data_gamelist.lua` explicitly loads `game_code .. "_small.png"` for icons and
   defines sort modes in order: title, players, recent play, play count, release,
-  manufacturer. The preview's cycle order now follows this.
+  manufacturer. This is a source observation, not a claim about the current
+  frontend's exact sort semantics.
 
-These nominal duration arguments are implemented in `CloverMotion.swift` and
-tested. Their native engine time-unit boundary was not separately traced.
-Keyboard repeat **scheduling** still follows macOS events, not an emulated
-console controller input stack. The thumbnail pointer uses its actual 13-entry
-sprite sequence; interpreting raw 33.333333 duration values as milliseconds and
-looping them is explicitly an assumption until native playback is traced.
+These are recovered nominal timing values; their engine time-unit boundary was
+not separately traced. Current keyboard/controller repeat and animation timing
+are frontend behavior, not proof of native console parity. The thumbnail pointer
+uses a 13-entry sprite sequence; interpreting raw 33.333333 duration values as
+milliseconds and looping them remains an assumption without native playback.
 
-## App changes and limitations
+## Runtime limits
 
-`CloverMenuView.swift` is an AppKit drawing/input surface inside the existing
-SwiftUI app shell. It renders the original art at fixed design coordinates;
-supports circular navigation, mouse selection, original-looking toolbar/dialog
-components, settings, key prompts, and external emulator mapping. Menu audio is
-optional and initially off. Only native file choosers remain macOS-styled.
-
-Suspend-point pips are decorative **empty placeholders**, not imported console
-saves. The Resume action explains the missing implementation rather than
-pretending states exist. Language selection, original demo/Mario sequences,
-save/rewind/unlock state machines, exact script-driven background acceleration,
-all transition timings, and runtime pixel parity are still incomplete. Custom
-rendering exposes the selected game and keyboard help as an accessibility group;
-it does not yet provide a complete per-sprite VoiceOver navigation tree.
+Static scene/resource data and bytecode observations do not reproduce the full
+runtime. Original demo sequences, exact script-driven background acceleration,
+all transition timings, and pixel parity require runtime evidence. No proprietary
+menu program or script is included or executed by this repository.
 
 ## Verification
 
-- 7 Swift model/motion tests and 5 native rendering/input/text tests pass.
-- 3 Python decoder/scene tests pass, with all four font containers exercised.
-- Rendering tests validate 1280×720 output, title/cyan-card pixels, modal scene
-  differences, arrow navigation, modal input blocking, source font/anchor data,
-  fallback glyph baselines, selected-label pixel centering at 1×/2×, and readable
-  tooltip text.
-- The actual renderer exports `analysis/clover-menu-preview.png` and
-  `analysis/clover-settings-preview.png`, inspected locally without capturing
-  other windows or the user's screen. These are reconstruction outputs, **not
-  screenshots of the original console**.
+Rust importer and UI tests validate font/container handling and the reconstructed
+scene when corresponding user-supplied local resources are available. These
+checks validate data handling, not original-console runtime behavior or pixel
+parity.
 
 There is still no physical-console screenshot/interaction capture proving a
 pixel-identical result. This is an asset-backed visual reconstruction, not a

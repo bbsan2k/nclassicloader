@@ -9,7 +9,9 @@
 #include <stdexcept>
 #include <thread>
 #include <sfc/sfc.hpp>
+#include <fc/fc.hpp>
 #undef register
+#include "nes_cartridge.h"
 
 namespace {
 using Bytes = std::vector<uint8_t>;
@@ -73,9 +75,10 @@ std::string digest(std::span<const uint8_t> bytes) {
   return hash.data();
 }
 
-std::string compatibility() {
+std::string compatibility(bool nes) {
   // Native floating-point/core implementation details forbid loose portability.
-  std::string result = "clover-ares-state-2\n" CLOVER_ARES_REVISION "\nperformance;pixel-accurate;48000;";
+  std::string result = nes ? "clover-ares-famicom-state-1\n" CLOVER_ARES_REVISION "\nines1;48000;"
+                           : "clover-ares-state-2\n" CLOVER_ARES_REVISION "\nperformance;pixel-accurate;48000;";
 #if defined(__aarch64__) || defined(_M_ARM64)
   result += "arm64;";
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -111,6 +114,7 @@ struct AresCore::Impl final : ares::Platform {
   std::thread::id owner;
   uint16_t buttons = 0;
   bool active = false;
+  bool nes = false;
   std::mutex videoMutex;
   std::condition_variable videoReady;
   uint64_t videoGeneration = 0;
@@ -123,8 +127,8 @@ struct AresCore::Impl final : ares::Platform {
     return true;
   }
   auto pak(ares::Node::Object node) -> std::shared_ptr<nall::vfs::directory> override {
-    if(node->name() == "Super Famicom") return systemPak;
-    if(node->name() == "Super Famicom Cartridge") return gamePak;
+    if(node->name() == "Super Famicom" || node->name() == "Famicom") return systemPak;
+    if(node->name() == "Super Famicom Cartridge" || node->name() == "Famicom Cartridge") return gamePak;
     return {};
   }
   auto video(ares::Node::Video::Screen, const uint32_t* data, uint32_t pitch,
@@ -150,6 +154,8 @@ struct AresCore::Impl final : ares::Platform {
     }
   }
   auto input(ares::Node::Input::Input node) -> void override {
+    // Shared ABI uses the SNES mask for both systems: NES B is bit 0 and A
+    // is bit 8, irrespective of the NES serial register's A-then-B order.
     static constexpr const char* names[] = {"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"};
     if(auto button = node->cast<ares::Node::Input::Button>()) {
       bool pressed = false;
@@ -205,19 +211,28 @@ bool AresCore::load(const std::filesystem::path& rom, const std::filesystem::pat
     auto extension = rom.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     if(extension == ".sfrom") return p.fail("SFROM containers require conversion to a raw .sfc ROM before loading");
-    if(extension != ".sfc" && extension != ".smc") return p.fail("Only raw .sfc and .smc ROM files are supported");
-    analyzer::CartridgeAnalyzer analyzer;
-    analyzer.rom = readFile(rom, 16 * 1024 * 1024);
-    auto manifest = analyzer.analyze(analyzer.rom); // strips the optional 512-byte copier header
-    if(!manifest || !analyzer.validHeader()) return p.fail("ROM is too small or its SNES header could not be analyzed");
-    auto bytes = std::move(analyzer.rom);
+    if(extension == ".qd" || extension == ".fds") return p.fail("Famicom Disk System images are not supported");
+    if(extension != ".sfc" && extension != ".smc" && extension != ".nes") return p.fail("Only raw .sfc, .smc and iNES .nes ROM files are supported");
+    p.nes = extension == ".nes";
+    nall::string manifest;
+    Bytes bytes;
+    if(p.nes) {
+      bytes = readFile(rom, 16 * 1024 * 1024);
+      manifest = nesManifest(bytes);
+    } else {
+      analyzer::CartridgeAnalyzer analyzer;
+      analyzer.rom = readFile(rom, 16 * 1024 * 1024);
+      manifest = analyzer.analyze(analyzer.rom); // strips the optional 512-byte copier header
+      if(!manifest || !analyzer.validHeader()) return p.fail("ROM is too small or its SNES header could not be analyzed");
+      bytes = std::move(analyzer.rom);
+    }
     p.romDigest = digest(bytes);
     auto document = nall::BML::unserialize(manifest);
     auto board = document["game/board"].string();
     if(board.beginsWith("GB-") || board.beginsWith("BS-") || board.beginsWith("ST-"))
       return p.fail("Super Game Boy, Satellaview and Sufami Turbo add-on cartridges are not supported");
-    bool mapped = false;
-    for(auto leaf : nall::BML::unserialize(boards).find("board")) {
+    bool mapped = p.nes;
+    if(!p.nes) for(auto leaf : nall::BML::unserialize(boards).find("board")) {
       auto id = leaf.text();
       if(id == board) mapped = true;
       if(id.match("*(*)*")) {
@@ -229,10 +244,15 @@ bool AresCore::load(const std::filesystem::path& rom, const std::filesystem::pat
     if(!mapped) return p.fail("Unsupported cartridge board: " + std::string(board.data()));
     p.gamePak = std::make_shared<nall::vfs::directory>();
     p.systemPak = std::make_shared<nall::vfs::directory>();
-    p.systemPak->append("boards.bml", nall::string{boards});
+    if(!p.nes) p.systemPak->append("boards.bml", nall::string{boards});
     p.gamePak->setAttribute("title", document["game/title"].string());
     p.gamePak->setAttribute("board", board);
     p.gamePak->setAttribute("region", document["game/region"].string());
+    if(p.nes) {
+      p.gamePak->setAttribute("mirror", document["game/board/mirror/mode"].string());
+      p.gamePak->setAttribute("system", document["game/system"].string());
+      p.gamePak->setAttribute("chip", document["game/board/chip/type"].string());
+    }
     if(auto frequency = document["game/board/oscillator/frequency"])
       p.gamePak->setAttribute("oscillator", frequency.natural());
     p.gamePak->append("manifest.bml", manifest);
@@ -262,12 +282,14 @@ bool AresCore::load(const std::filesystem::path& rom, const std::filesystem::pat
       imageHash.input(data);
     }
     if(!remaining.empty()) throw std::runtime_error("Unexpected trailing or incomplete appended firmware in ROM");
-    if(systemFirmware.empty() || !std::filesystem::is_regular_file(systemFirmware/"ipl.rom"))
-      throw std::runtime_error("Required SMP boot firmware: ipl.rom. Import a supported console image or choose a firmware folder.");
-    auto ipl=readFile(systemFirmware/"ipl.rom",64);
-    if(ipl.size()!=64) throw std::runtime_error("Incorrect SMP boot firmware size: ipl.rom must be 64 bytes");
-    p.systemPak->append("ipl.rom",std::span<const uint8_t>(ipl));
-    imageHash.input(ipl);
+    if(!p.nes) {
+      if(systemFirmware.empty() || !std::filesystem::is_regular_file(systemFirmware/"ipl.rom"))
+        throw std::runtime_error("Required SMP boot firmware: ipl.rom. Import a supported console image or choose a firmware folder.");
+      auto ipl=readFile(systemFirmware/"ipl.rom",64);
+      if(ipl.size()!=64) throw std::runtime_error("Incorrect SMP boot firmware size: ipl.rom must be 64 bytes");
+      p.systemPak->append("ipl.rom",std::span<const uint8_t>(ipl));
+      imageHash.input(ipl);
+    }
     p.imageDigest = imageHash.digest().data();
     if(saves.empty()) throw std::runtime_error("An explicit save directory is required");
     p.savePath = saves / p.romDigest;
@@ -293,11 +315,16 @@ bool AresCore::load(const std::filesystem::path& rom, const std::filesystem::pat
     }
     ares::platform = &p;
     p.owner = std::this_thread::get_id();
-    ares::SuperFamicom::option("Pixel Accuracy", "true");
-    ares::SuperFamicom::option("Deterministic Entropy", "true");
     bool pal = document["game/region"].string() == "PAL";
-    if(!ares::SuperFamicom::load(p.root, pal ? "[Nintendo] Super Famicom (PAL)" : "[Nintendo] Super Famicom (NTSC)"))
-      throw std::runtime_error("ares could not initialize the Super Famicom system");
+    if(p.nes) {
+      if(!ares::Famicom::load(p.root, pal ? "[Nintendo] Famicom (PAL)" : "[Nintendo] Famicom (NTSC-U)"))
+        throw std::runtime_error("ares could not initialize the Famicom system");
+    } else {
+      ares::SuperFamicom::option("Pixel Accuracy", "true");
+      ares::SuperFamicom::option("Deterministic Entropy", "true");
+      if(!ares::SuperFamicom::load(p.root, pal ? "[Nintendo] Super Famicom (PAL)" : "[Nintendo] Super Famicom (NTSC)"))
+        throw std::runtime_error("ares could not initialize the Super Famicom system");
+    }
     auto slot = p.root->find<ares::Node::Port>("Cartridge Slot");
     if(!slot || !slot->allocate()) throw std::runtime_error("ares cartridge slot allocation failed");
     slot->connect();
@@ -305,6 +332,9 @@ bool AresCore::load(const std::filesystem::path& rom, const std::filesystem::pat
     if(!controller || !controller->allocate("Gamepad")) throw std::runtime_error("ares gamepad allocation failed");
     controller->connect();
     for(auto stream : p.root->find<ares::Node::Audio::Stream>()) stream->setResamplerFrequency(48000);
+    // Famicom's default full raster includes horizontal/vertical blanking.
+    // Expose the actual 256x240 viewport for both 4:3 and square-pixel modes.
+    if(p.nes) for(auto screen : p.root->find<ares::Node::Video::Screen>()) screen->setOverscan(false);
     p.root->power();
     p.buttons = 0;
     p.active = true;
@@ -346,7 +376,7 @@ bool AresCore::saveState(const std::filesystem::path& path) {
     auto state = p.root->serialize();
     if(!state) return p.fail("ares serialization failed");
     std::span<const uint8_t> payload(state.data(), state.size());
-    auto header = compatibility() + p.romDigest + "\n" + p.imageDigest + "\n" + digest(payload) + "\n";
+    auto header = compatibility(p.nes) + p.romDigest + "\n" + p.imageDigest + "\n" + digest(payload) + "\n";
     Bytes file(header.begin(), header.end());
     file.insert(file.end(), payload.begin(), payload.end());
     writeFile(path, file);
@@ -359,7 +389,7 @@ bool AresCore::loadState(const std::filesystem::path& path) {
   if(!p.requireLoaded()) return false;
   try {
     auto file = readFile(path, 64 * 1024 * 1024);
-    auto prefix = compatibility() + p.romDigest + "\n" + p.imageDigest + "\n";
+    auto prefix = compatibility(p.nes) + p.romDigest + "\n" + p.imageDigest + "\n";
     size_t offset = prefix.size() + 65;
     if(file.size() <= offset || !std::equal(prefix.begin(), prefix.end(), file.begin()))
       return p.fail("Incompatible state: bridge/core build, ROM, or firmware differs");

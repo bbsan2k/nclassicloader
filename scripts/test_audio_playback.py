@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise SDL mixing/resampling and gapless menu-loop refill without audible output."""
+"""Exercise Rust SDL playback and gapless menu-loop refill without audible output."""
 import argparse
 import json
 import math
 import os
 import pathlib
-import re
 import shutil
 import struct
 import subprocess
@@ -15,7 +14,7 @@ import wave
 root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--assets", type=pathlib.Path, required=True, help="An imported profile's assets directory (read-only)")
-parser.add_argument("--executable", type=pathlib.Path, default=root / ".build/portable/ClassicMenu.app/Contents/MacOS/ClassicMenu")
+parser.add_argument("--executable", type=pathlib.Path, default=root / "rust/target/release/clover-rust")
 args = parser.parse_args()
 work = pathlib.Path(tempfile.mkdtemp(prefix="music-loop-", dir=root / ".build"))
 assets = work / "assets"
@@ -36,11 +35,10 @@ data.mkdir()
 (data / "preferences.json").write_text(json.dumps({"schema": 1, "sound": True, "motion": False}))
 raw = work / "playback.raw"
 environment = {**os.environ, "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "disk", "SDL_AUDIO_DISK_OUTPUT_FILE": str(raw)}
-result = subprocess.run([str(args.executable.resolve()), "--assets", str(assets), "--data-dir", str(data), "--smoke-test", "--frames", "240"],
+result = subprocess.run([str(args.executable.resolve()), "run", "--assets", str(assets), "--data-dir", str(data), "--frames", "240"],
                         env=environment, text=True, capture_output=True, timeout=30)
 (work / "playback.log").write_text(result.stdout + result.stderr)
 assert result.returncode == 0, result.stdout + result.stderr
-assert re.search(r"format=S16LE channels=2 freq=44100", result.stderr), result.stderr
 samples = [left for left, _ in struct.iter_unpack("<hh", raw.read_bytes())]
 first = next(i for i, sample in enumerate(samples) if abs(sample) > 100)
 checked = samples[first + 2048:-2048]

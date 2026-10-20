@@ -16,7 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const IMPORTER_VERSION: u32 = 5;
+pub const IMPORTER_VERSION: u32 = 7;
 const DATA_MIGRATION_LIMIT: u64 = 1024 * 1024 * 1024;
 static STAGE_SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -58,7 +58,12 @@ impl Profile {
             .get("externalFirmwareGames")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        let mut label = format!("{region} / {version} ({games} converted");
+        let system = if self.manifest.get("system").and_then(Value::as_str) == Some("nes") {
+            "NES"
+        } else {
+            "SNES"
+        };
+        let mut label = format!("{system} / {region} / {version} ({games} prepared");
         if firmware != 0 {
             label.push_str(&format!("; {firmware} needs firmware"));
         }
@@ -122,7 +127,11 @@ pub fn resolve_filesystem(source: &Path) -> ImportResult<PathBuf> {
     if name.starts_with("kernel-") && name.ends_with(".img") {
         let stem = &name[7..name.len() - 4];
         let parent = source.parent().unwrap_or_else(|| Path::new("."));
-        for directory in [parent.to_path_buf(), parent.join("SNES-Mini-Kernels")] {
+        for directory in [
+            parent.to_path_buf(),
+            parent.join("SNES-Mini-Kernels"),
+            parent.join("NES-Mini-Kernels"),
+        ] {
             for suffix in [".hsqs", "_trimmed.hsqs", ".tar.gz"] {
                 let sibling = directory.join(format!("{stem}{suffix}"));
                 if regular_not_symlink(&sibling) {
@@ -229,7 +238,7 @@ pub fn valid_profile(profile: &Profile) -> bool {
             .get("importerVersion")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        if ![4, u64::from(IMPORTER_VERSION)].contains(&version)
+        if ![4, 5, 6, u64::from(IMPORTER_VERSION)].contains(&version)
             || !directory_not_symlink(&profile.directory)
         {
             return Ok(false);
@@ -485,10 +494,29 @@ pub fn import_image(
             return Err("Ambiguous image: multiple stock UI roots".into());
         }
     }
-    let ui = ui.ok_or("Unsupported image: no recognized SNES Classic UI")?;
+    if files.contains_key("usr/share/clover-ui/dependencies.json") {
+        if ui.is_some() {
+            return Err("Ambiguous image: multiple stock UI roots".into());
+        }
+        ui = Some(
+            if files.contains_key("usr/share/clover-ui/resources/fonts/hvc/m.fnt") {
+                "hvc"
+            } else {
+                "nes"
+            },
+        );
+    }
+    let ui = ui.ok_or("Unsupported image: no recognized NES/SNES Classic UI (a save-data backup is not a game filesystem)")?;
+    let nes = matches!(ui, "nes" | "hvc");
+    let locale = if matches!(ui, "shvc" | "hvc") {
+        "jpn_ja"
+    } else {
+        "usa_en"
+    };
+    let system = if nes { "nes" } else { "snes" };
     let region = match ui {
-        "shvc" => "Japan",
-        "snes-usa" => "USA",
+        "shvc" | "hvc" => "Japan",
+        "snes-usa" | "nes" => "USA",
         _ => "Europe",
     };
     let mut version = "unknown".to_owned();
@@ -508,13 +536,15 @@ pub fn import_image(
     report(&mut progress, "Decoding Clover artwork and fonts...");
     prepare_skin(&files, ui, &stage_path.join("assets/skin"))?;
 
-    report(
-        &mut progress,
-        "Locating verified SMP boot firmware in the supplied image...",
-    );
-    let ipl = locate_ipl(&files)
-        .ok_or("Image does not contain the verified SMP IPL firmware required by ares")?;
-    write_bytes(&stage_path.join("assets/firmware/ipl.rom"), &ipl)?;
+    if !nes {
+        report(
+            &mut progress,
+            "Locating verified SMP boot firmware in the supplied image...",
+        );
+        let ipl = locate_ipl(&files)
+            .ok_or("Image does not contain the verified SMP IPL firmware required by ares")?;
+        write_bytes(&stage_path.join("assets/firmware/ipl.rom"), &ipl)?;
+    }
 
     let mut games = Vec::new();
     let mut conversions = Vec::new();
@@ -530,8 +560,19 @@ pub fn import_image(
         let entry = sections.get("Desktop Entry").cloned().unwrap_or_default();
         let meta = sections.get("X-CLOVER Game").cloned().unwrap_or_default();
         let code = field(&meta, "Code");
+        if nes
+            && code == "PRODUCTION-TESTS"
+            && path == "usr/share/games/nes/kachikachi/PRODUCTION-TESTS/PRODUCTION-TESTS.desktop"
+        {
+            continue;
+        }
+        let game_root = if nes {
+            format!("usr/share/games/nes/kachikachi/{code}/")
+        } else {
+            format!("usr/share/games/{code}/")
+        };
         if !id_safe(code)
-            || path != &format!("usr/share/games/{code}/{code}.desktop")
+            || path != &format!("{game_root}{code}.desktop")
             || !codes.insert(code.to_owned())
         {
             return Err("Invalid or duplicate catalog code".into());
@@ -552,6 +593,7 @@ pub fn import_image(
         }
         let mut game = json!({
             "id": code,
+            "system": system,
             "title": title,
             "sortTitle": field(&meta, "SortRawTitle"),
             "publisher": field(&meta, "SortRawPublisher"),
@@ -560,7 +602,6 @@ pub fn import_image(
             "simultaneous": field(&meta, "Simultaneous") == "1",
             "copyright": field(&meta, "Copyright"),
         });
-        let game_root = format!("usr/share/games/{code}/");
         for suffix in [".png", "_small.png"] {
             let name = format!("{code}{suffix}");
             let art = files
@@ -569,6 +610,40 @@ pub fn import_image(
             write_bytes(&stage_path.join("assets/games").join(code).join(name), art)?;
         }
         report(&mut progress, &format!("Preparing {title}..."));
+        if nes {
+            let mut conversion = json!({"id": code, "title": title});
+            let result = if let Some(rom) = files.get(&format!("{game_root}{code}.nes")) {
+                crate::nes::prepare(rom)
+            } else if files.contains_key(&format!("{game_root}{code}.qd")) {
+                Err("Famicom Disk System .qd images require disk conversion and a user-supplied BIOS; not implemented yet".to_owned())
+            } else {
+                Err("Missing NES cartridge image".to_owned())
+            };
+            match result {
+                Ok((rom, mapper, status)) => {
+                    let relative = format!("roms/{code}.nes");
+                    write_bytes(&stage_path.join("assets").join(&relative), &rom)?;
+                    game["rom"] = json!(relative);
+                    game["importStatus"] = json!(status);
+                    game["mapper"] = json!(mapper);
+                    conversion["status"] = json!(status);
+                    conversion["sourceSHA256"] = json!(digest(
+                        files
+                            .get(&format!("{game_root}{code}.nes"))
+                            .expect("validated member")
+                    ));
+                    conversion["romSHA256"] = json!(digest(&rom));
+                    playable += 1;
+                }
+                Err(error) => {
+                    game["importError"] = json!(error);
+                    conversion["error"] = json!(error);
+                }
+            }
+            games.push(game);
+            conversions.push(conversion);
+            continue;
+        }
         let source_rom = files.get(&format!("{game_root}{code}.sfrom"));
         let mut conversion = json!({"id": code, "title": title});
         let converted = match source_rom {
@@ -606,12 +681,15 @@ pub fn import_image(
         games.push(game);
         conversions.push(conversion);
     }
-    if games.len() != 21 {
-        return Err("Unsupported stock catalog: expected 21 entries".into());
+    if games.len() != if nes { 30 } else { 21 } {
+        return Err(format!(
+            "Unsupported stock catalog: expected {} entries",
+            if nes { 30 } else { 21 }
+        ));
     }
     let catalog = json!({
-        "schema": 1, "region": region, "ui": ui,
-        "locale": if ui == "shvc" { "jpn_ja" } else { "usa_en" },
+        "schema": 1, "region": region, "ui": ui, "system": system,
+        "locale": locale,
         "version": version, "games": games,
     });
     write_json(&stage_path.join("assets/catalog.json"), &catalog)?;
@@ -620,10 +698,10 @@ pub fn import_image(
         "schema": 1, "importerVersion": IMPORTER_VERSION, "sourceSHA256": sha,
         "source": path_string(&filesystem), "selectedSource": path_string(&selected_source),
         "selectedSourceSHA256": file_digest(source).map_err(|e| format!("Cannot hash selected image: {e}"))?,
-        "region": region, "ui": ui, "locale": if ui == "shvc" { "jpn_ja" } else { "usa_en" },
-        "version": version, "games": 21, "playableGames": playable,
+        "region": region, "ui": ui, "locale": locale, "system": system,
+        "version": version, "games": games.len(), "playableGames": playable,
         "externalFirmwareGames": external_firmware_games, "conversions": conversions,
-        "smpIPL": {"source": "usr/bin/canoe-shvc", "sha256": "c95f88b299030d5afa55b1031e2b5ef2dff650c4b4e6bb6f8b1359436521278f"},
+        "smpIPL": if nes { Value::Null } else { json!({"source": "usr/bin/canoe-shvc", "sha256": "c95f88b299030d5afa55b1031e2b5ef2dff650c4b4e6bb6f8b1359436521278f"}) },
         "files": {},
     });
     preserve_old_data(

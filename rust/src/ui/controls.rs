@@ -3,6 +3,12 @@ use super::*;
 
 impl App {
     pub(super) fn handle_key(&mut self, code: Scancode, repeat: bool, canvas: &Canvas<Window>) {
+        if code == Scancode::F11 {
+            if !repeat {
+                self.activate("fullscreen", canvas);
+            }
+            return;
+        }
         if self.playing {
             match code {
                 Scancode::Escape if !repeat => self.leave_game(),
@@ -43,8 +49,11 @@ impl App {
                 }
                 Scancode::Return if !repeat => {
                     if self.suspend_controls {
-                        let action =
-                            ["save", "resume", "lock", "delete", "close"][self.focus.min(4)];
+                        let action = if self.art.nes && self.focus == 0 {
+                            "choose-suspend"
+                        } else {
+                            ["save", "resume", "lock", "delete", "close"][self.focus.min(4)]
+                        };
                         self.activate(action, canvas);
                     } else if self.has_pending() {
                         self.request_suspend_save();

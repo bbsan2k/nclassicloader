@@ -276,7 +276,7 @@ impl App {
             heading_left + 76.0 + heading_width * 0.5,
             399.0,
             "m",
-            Color::WHITE,
+            self.art.palette_color("resume_title", Color::WHITE),
             840.0,
             true,
         );
@@ -313,8 +313,16 @@ impl App {
                 Color::WHITE,
             );
             if let Some(texture) = &self.suspend_previews[slot] {
-                // Original TextureComponent: 160 x 120, centered 12px above the card.
-                let _ = canvas.copy(texture, None, FRect::new(x - 80.0, 468.0, 160.0, 120.0));
+                let (width, height) = if self.art.nes {
+                    (162.0, 122.0)
+                } else {
+                    (160.0, 120.0)
+                };
+                let _ = canvas.copy(
+                    texture,
+                    None,
+                    FRect::new(x - width * 0.5, 528.0 - height * 0.5, width, height),
+                );
             } else {
                 let label = if saved {
                     "Preview unavailable".into()
@@ -327,7 +335,7 @@ impl App {
                     x,
                     if saved { 528.0 } else { 540.0 },
                     "s",
-                    Color::WHITE,
+                    self.art.palette_color("resume_empty", Color::WHITE),
                     172.0,
                     false,
                 );
@@ -336,10 +344,10 @@ impl App {
                 self.art.sprite(
                     canvas,
                     &format!("icon_numer_{}", slot + 1),
-                    x - 123.0,
-                    474.0,
-                    42.0,
-                    42.0,
+                    x - if self.art.nes { 124.5 } else { 123.0 },
+                    if self.art.nes { 475.5 } else { 474.0 },
+                    if self.art.nes { 39.0 } else { 42.0 },
+                    if self.art.nes { 39.0 } else { 42.0 },
                     Color::WHITE,
                 );
             }
@@ -377,8 +385,16 @@ impl App {
         }
         let buttons = [
             (
-                "save",
-                self.art.translate("sys_resume_hud_Register", "Save"),
+                if self.art.nes {
+                    "choose-suspend"
+                } else {
+                    "save"
+                },
+                if self.art.nes {
+                    self.art.translate("sys_option_hud_Decide", "OK")
+                } else {
+                    self.art.translate("sys_resume_hud_Register", "Save")
+                },
             ),
             (
                 "resume",
@@ -397,7 +413,15 @@ impl App {
         ];
         // The stock HUD is a centered group of icon+label pairs, not five wide buttons.
         let icons = [
-            ("icon_Y_resume", 30.0, 30.0),
+            (
+                if self.art.nes {
+                    "icon_A_resume"
+                } else {
+                    "icon_Y_resume"
+                },
+                30.0,
+                30.0,
+            ),
             ("icon_start_resume", 78.0, 24.0),
             ("icon_X_resume", 30.0, 30.0),
             ("icon_select_resume", 90.0, 24.0),
@@ -426,22 +450,37 @@ impl App {
                     Color::WHITE,
                 );
             }
-            self.art.sprite(
-                canvas,
-                icon,
-                left + icon_width * 0.5,
-                669.0,
-                icon_width,
-                icon_height,
-                Color::WHITE,
-            );
+            if self.art.nes && index == 2 {
+                // NES has no X-button atlas sprite. This extra emulator
+                // action retains its actual keyboard X shortcut explicitly.
+                self.art.text(
+                    canvas,
+                    "X",
+                    left + icon_width * 0.5,
+                    669.0,
+                    "s",
+                    self.art.palette_color("resume_hud", Color::BLACK),
+                    icon_width,
+                    false,
+                );
+            } else {
+                self.art.sprite(
+                    canvas,
+                    icon,
+                    left + icon_width * 0.5,
+                    669.0,
+                    icon_width,
+                    icon_height,
+                    Color::WHITE,
+                );
+            }
             self.art.text(
                 canvas,
                 &label,
                 left + icon_width + 4.0 + (width - icon_width - 4.0) * 0.5,
                 669.0,
                 "s",
-                Color::WHITE,
+                self.art.palette_color("resume_hud", Color::WHITE),
                 1000.0,
                 true,
             );

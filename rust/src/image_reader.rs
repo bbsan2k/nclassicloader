@@ -101,11 +101,11 @@ fn selected(path: &str) -> bool {
     {
         return true;
     }
-    if path.starts_with("usr/share/ui/") {
+    if path.starts_with("usr/share/ui/") || path.starts_with("usr/share/clover-ui/") {
         return true;
     }
     path.starts_with("usr/share/games/")
-        && [".desktop", ".png", ".sfrom"]
+        && [".desktop", ".png", ".sfrom", ".nes", ".qd", ".fnt"]
             .iter()
             .any(|suffix| path.ends_with(suffix))
 }
@@ -171,6 +171,40 @@ fn inflate_block(input: &[u8], maximum: usize) -> ReadResult<Vec<u8>> {
     Ok(result)
 }
 
+fn decode_block(input: &[u8], maximum: usize, compression: u16) -> ReadResult<Vec<u8>> {
+    if compression == 1 {
+        return inflate_block(input, maximum);
+    }
+    decode_xz_block(input, maximum)
+}
+
+#[cfg(not(feature = "xz"))]
+fn decode_xz_block(_input: &[u8], _maximum: usize) -> ReadResult<Vec<u8>> {
+    Err(fail(
+        "XZ-compressed filesystems require the xz feature (enabled by default in desktop builds)",
+    ))
+}
+
+#[cfg(feature = "xz")]
+fn decode_xz_block(input: &[u8], maximum: usize) -> ReadResult<Vec<u8>> {
+    // Bound both liblzma's dictionary allocation and decompressed output. A
+    // single SquashFS block must contain exactly one complete XZ stream.
+    let stream = xz2::stream::Stream::new_stream_decoder(64 * 1024 * 1024, 0)
+        .map_err(|e| fail(format!("Cannot initialize XZ decoder: {e}")))?;
+    let mut decoder = xz2::bufread::XzDecoder::new_stream(Cursor::new(input), stream);
+    let mut output = Vec::new();
+    (&mut decoder)
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut output)
+        .map_err(|e| fail(format!("Invalid SquashFS XZ block: {e}")))?;
+    require(output.len() <= maximum, "oversized SquashFS XZ block")?;
+    require(
+        decoder.total_in() == input.len() as u64,
+        "trailing data in SquashFS XZ block",
+    )?;
+    Ok(output)
+}
+
 #[derive(Clone)]
 struct Metadata {
     bytes: Vec<u8>,
@@ -192,6 +226,7 @@ struct Squash<'a> {
     fragment_table: u64,
     block_size: usize,
     fragment_count: u32,
+    compression: u16,
     metadata: BTreeMap<u64, Metadata>,
     metadata_size: usize,
     visited_directories: BTreeSet<u64>,
@@ -219,7 +254,7 @@ impl<'a> Squash<'a> {
         )?;
         let raw = self.read(offset + 2, length)?;
         let bytes = if value & 0x8000 == 0 {
-            inflate_block(&raw, 8192)?
+            decode_block(&raw, 8192, self.compression)?
         } else {
             raw
         };
@@ -280,7 +315,7 @@ impl<'a> Squash<'a> {
         )?;
         let data = self.read(start, size)?;
         if descriptor & 0x0100_0000 == 0 {
-            inflate_block(&data, self.block_size)
+            decode_block(&data, self.block_size, self.compression)
         } else {
             Ok(data)
         }
@@ -451,9 +486,10 @@ impl<'a> Squash<'a> {
             "only SquashFS v4.0 is supported",
         )?;
         require(
-            u16le(superblock, 20) == 1,
-            "SquashFS compression must be gzip/zlib (1)",
+            matches!(u16le(superblock, 20), 1 | 4),
+            "SquashFS compression must be gzip/zlib (1) or XZ (4)",
         )?;
+        self.compression = u16le(superblock, 20);
         let block_size = u32le(superblock, 12);
         let log = u16le(superblock, 22);
         require(
@@ -686,6 +722,7 @@ fn squash(source: &mut Source) -> ReadResult<Files> {
         fragment_table: 0,
         block_size: 0,
         fragment_count: 0,
+        compression: 1,
         metadata: BTreeMap::new(),
         metadata_size: 0,
         visited_directories: BTreeSet::new(),
@@ -717,6 +754,21 @@ pub fn read_image(path: &Path) -> ReadResult<Files> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "xz")]
+    #[test]
+    fn xz_blocks_are_bounded_and_require_complete_single_streams() {
+        use std::io::Write;
+        let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 1);
+        encoder.write_all(&vec![42; 16384]).unwrap();
+        let bytes = encoder.finish().unwrap();
+        assert_eq!(decode_block(&bytes, 16384, 4).unwrap(), vec![42; 16384]);
+        assert!(decode_block(&bytes, 1024, 4).is_err());
+        assert!(decode_block(&bytes[..bytes.len() - 1], 16384, 4).is_err());
+        let mut trailing = bytes.clone();
+        trailing.extend_from_slice(&bytes);
+        assert!(decode_block(&trailing, 16384, 4).is_err());
+    }
     use flate2::{Compression, write::GzEncoder};
     use std::{
         fs,

@@ -1,0 +1,67 @@
+name: Build and test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Ninja
+        run: python -m pip install ninja
+      - name: Initialize MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxkbcommon-dev libasound2-dev libpulse-dev libudev-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
+      - name: Build Rust native app and package
+        run: python scripts/build-rust-desktop.py
+      - name: Rust unit tests and lint
+        shell: bash
+        run: |
+          export CLOVER_NATIVE_BUILD_DIR="$GITHUB_WORKSPACE/.build/native"
+          if [ "$RUNNER_OS" = "Windows" ]; then export RUSTFLAGS="-C target-feature=+crt-static"; fi
+          cargo fmt --manifest-path rust/Cargo.toml --check
+          cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets --features native-app -- -D warnings
+          cargo test --locked --manifest-path rust/Cargo.toml --all-targets --features native-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClassicMenu-Rust-${{ runner.os }}
+          path: |
+            dist/rust-desktop/*.zip
+            dist/rust-desktop/*.tar.gz
+          if-no-files-found: error
+  portable-rust-target-checks:
+    name: ${{ matrix.platform }} portable Rust library check (not an app build)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            target: aarch64-apple-ios
+            runner: macos-latest
+          - platform: tvOS
+            target: aarch64-apple-tvos
+            runner: macos-latest
+          - platform: WebAssembly
+            target: wasm32-unknown-unknown
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check portable Rust library only
+        run: cargo check --locked --manifest-path rust/Cargo.toml --lib --no-default-features --target ${{ matrix.target }}

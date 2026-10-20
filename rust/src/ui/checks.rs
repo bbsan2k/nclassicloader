@@ -2,6 +2,188 @@
 use super::*;
 
 impl App {
+    pub(super) fn exercise_audio(
+        &mut self,
+        canvas: &Canvas<Window>,
+        output: &Path,
+    ) -> Result<(), String> {
+        fs::create_dir_all(output).map_err(|e| e.to_string())?;
+        if !self.begin_game(canvas) {
+            return Err(self.message.clone());
+        }
+        if self.core_audio.is_none() {
+            return Err("No SDL playback device for audio exercise".into());
+        }
+        let mut phases = Vec::new();
+        for hz in [60, 120, 50] {
+            let audio = self.core_audio.as_ref().expect("audio checked");
+            audio.clear();
+            if audio.queued() != 0 || audio.started.get() {
+                return Err("Audio reset failed".into());
+            }
+            let priming_frames = self.pump_game_audio()?;
+            if !self
+                .core_audio
+                .as_ref()
+                .is_some_and(|audio| audio.started.get())
+            {
+                return Err("Audio was not primed before starting playback".into());
+            }
+            let start = Instant::now();
+            let mut deadline = start;
+            let mut frames = 0;
+            let mut ticks = 0;
+            let mut underruns = 0;
+            let mut minimum = usize::MAX;
+            let mut maximum = 0;
+            while start.elapsed().as_secs_f64() < 1.5 {
+                let audio = self.core_audio.as_ref().expect("audio checked");
+                let queued = audio.queued();
+                if queued == 0 {
+                    underruns += 1;
+                }
+                minimum = minimum.min(queued);
+                maximum = maximum.max(queued);
+                frames += self.pump_game_audio()?;
+                ticks += 1;
+                // Inject short render/event stalls without altering the audio
+                // device's clock. Production must catch up without queue clears.
+                deadline += std::time::Duration::from_nanos(1_000_000_000 / hz);
+                let jitter = if ticks % 19 == 0 {
+                    std::time::Duration::from_millis(12)
+                } else {
+                    std::time::Duration::ZERO
+                };
+                std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + jitter);
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+            let emulation_hz = frames as f64 / elapsed;
+            phases.push(json!({"displayHz":hz,"emulatedFrames":frames,"elapsed":elapsed,"emulationHz":emulation_hz,"primingFrames":priming_frames,"underruns":underruns,"minimumQueuedBytes":minimum,"maximumQueuedBytes":maximum}));
+        }
+        self.core_audio.as_ref().expect("audio checked").clear();
+        self.playing = false;
+        atomic_json(&output.join("audio.json"), &json!({"phases":phases}))?;
+        for phase in &phases {
+            if phase["underruns"].as_u64() != Some(0) {
+                return Err(format!(
+                    "Audio underrun during controlled pacing exercise: {phase}"
+                ));
+            }
+            let hz = phase["emulationHz"].as_f64().unwrap_or(0.0);
+            if !(55.0..65.0).contains(&hz) {
+                return Err(format!(
+                    "Emulation clock followed display rather than audio: {phase}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    // Explicit development audit. All states/SRAM go under the caller-selected
+    // audit output, never into the profile's normal save directory.
+    pub(super) fn audit_games(&mut self, output: &Path) -> Result<(), String> {
+        fs::create_dir_all(output).map_err(|e| e.to_string())?;
+        let mut results = Vec::new();
+        let mut failures = Vec::new();
+        for game in &self.games {
+            let Some(rom) = self.rom_path(game) else {
+                results.push(json!({"id": game.id, "blocked": true, "reason": game.import_error}));
+                continue;
+            };
+            let run = || -> Result<Value, String> {
+                let mut core = crate::ares::AresSession::new().map_err(|e| e.to_string())?;
+                let saves = output.join("runtime").join(&game.id);
+                fs::create_dir_all(&saves).map_err(|e| e.to_string())?;
+                core.load(
+                    &rom,
+                    &saves,
+                    Some(&self.firmware_path),
+                    &self.assets_path.join("firmware"),
+                )
+                .map_err(|e| e.to_string())?;
+                let mut audio_samples = 0;
+                let mut peak = 0.0_f32;
+                let mut max_colors = 0;
+                for frame in 0..600 {
+                    // Boot, then press Start and exercise both NES action buttons.
+                    let buttons = if (180..190).contains(&frame) {
+                        1 << 3
+                    } else if frame > 240 && frame % 60 < 20 {
+                        (1 << 8) | 1 | (1 << 7)
+                    } else {
+                        0
+                    };
+                    core.run_frame(buttons).map_err(|e| e.to_string())?;
+                    for &sample in core.audio() {
+                        if !sample.is_finite() {
+                            return Err("Non-finite audio sample".into());
+                        }
+                        peak = peak.max(sample.abs());
+                    }
+                    audio_samples += core.audio().len();
+                    if frame % 30 == 0 {
+                        let video = core.frame().ok_or("Missing video frame")?;
+                        max_colors = max_colors.max(
+                            video
+                                .pixels_argb
+                                .iter()
+                                .copied()
+                                .collect::<HashSet<_>>()
+                                .len(),
+                        );
+                    }
+                }
+                let frame = core.frame().ok_or("Missing video frame")?;
+                let (width, height) = (frame.width, frame.height);
+                let colors: HashSet<_> = frame.pixels_argb.iter().copied().collect();
+                if max_colors < 2 || audio_samples == 0 {
+                    return Err(format!(
+                        "No rendered picture or audio samples (max colors={max_colors}, samples={audio_samples})"
+                    ));
+                }
+                let state = saves.join("audit.state");
+                core.save_state(&state).map_err(|e| e.to_string())?;
+                for _ in 0..30 {
+                    core.run_frame(0).map_err(|e| e.to_string())?;
+                }
+                let expected = core
+                    .frame()
+                    .ok_or("Missing replay frame")?
+                    .pixels_argb
+                    .to_vec();
+                core.load_state(&state).map_err(|e| e.to_string())?;
+                for _ in 0..30 {
+                    core.run_frame(0).map_err(|e| e.to_string())?;
+                }
+                if expected != core.frame().ok_or("Missing replay frame")?.pixels_argb {
+                    return Err("State replay diverged".into());
+                }
+                core.unload().map_err(|e| e.to_string())?;
+                Ok(
+                    json!({"id":game.id,"width":width,"height":height,"colors":colors.len(),"maxColors":max_colors,"audioSamples":audio_samples,"audioPeak":peak,"replay":true}),
+                )
+            };
+            match run() {
+                Ok(result) => {
+                    eprintln!("Audited {}", game.title);
+                    results.push(result);
+                }
+                Err(error) => {
+                    let message = format!("{} ({}): {error}", game.title, game.id);
+                    eprintln!("{message}");
+                    failures.push(message);
+                    results.push(json!({"id":game.id,"error":error}));
+                }
+            }
+        }
+        atomic_json(&output.join("games.json"), &json!(results))?;
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("\n"))
+        }
+    }
+
     pub(super) fn exercise_suspend(
         &mut self,
         canvas: &mut Canvas<Window>,
@@ -16,6 +198,19 @@ impl App {
             }
         };
         let game = self.selected().id.clone();
+        self.handle_key(Scancode::F11, false, canvas);
+        check(
+            self.fullscreen && self.fullscreen_dirty,
+            "F11 must request full screen",
+        )?;
+        self.handle_key(Scancode::F11, true, canvas);
+        check(
+            self.fullscreen,
+            "Held F11 must not repeatedly toggle full screen",
+        )?;
+        self.handle_key(Scancode::F11, false, canvas);
+        check(!self.fullscreen, "F11 must return to windowed mode")?;
+        self.fullscreen_dirty = false;
         self.handle_key(Scancode::Up, false, canvas);
         check(
             self.menu_focus == MenuFocus::Toolbar && self.panel.is_empty(),
@@ -61,6 +256,10 @@ impl App {
         )?;
 
         self.activate("toolbar:0", canvas);
+        if self.art.nes {
+            self.handle_key(Scancode::Down, false, canvas);
+            check(self.focus == 1, "NES Display has no decorative-frame row")?;
+        }
         check(
             self.focus == 1,
             "Display must initially focus the current 4:3 mode",

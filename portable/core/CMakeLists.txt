@@ -36,6 +36,9 @@ foreach(COLOR Green Red)
   string(APPEND SPRITES "inline const unsigned char Crosshair${COLOR}[] = {${PNG}};\n")
 endforeach()
 string(APPEND SPRITES "}\n")
+file(READ "${ARES_ROOT}/ares/ares/resource/sprite/fc/crosshair.png" PNG HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," PNG "${PNG}")
+string(APPEND SPRITES "namespace Resource::Sprite::Famicom {\ninline const unsigned char Crosshair[] = {${PNG}};\n}\n")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ares/resource/resource.hpp" "${SPRITES}")
 
 add_library(clover_ares STATIC
@@ -43,16 +46,27 @@ add_library(clover_ares STATIC
   "${ARES_ROOT}/nall/nall/nall.cpp"
   "${ARES_ROOT}/libco/libco.c"
   "${ARES_ROOT}/ares/ares/memory/fixed-allocator.cpp"
-  "${ARES_ROOT}/ares/sfc/sfc.cpp")
+  "${ARES_ROOT}/ares/sfc/sfc.cpp"
+  "${ARES_ROOT}/ares/fc/fc.cpp")
 foreach(COMPONENT wdc65816 spc700 arm7tdmi gsu hg51b upd96050)
   target_sources(clover_ares PRIVATE "${ARES_ROOT}/ares/component/processor/${COMPONENT}/${COMPONENT}.cpp")
+endforeach()
+foreach(COMPONENT processor/mos6502 audio/ym2149 audio/ym2413 eeprom/m24c flash/sst39sf0x0)
+  get_filename_component(NAME "${COMPONENT}" NAME)
+  target_sources(clover_ares PRIVATE "${ARES_ROOT}/ares/component/${COMPONENT}/${NAME}.cpp")
+endforeach()
+# The pinned FC compilation unit also contains EPSM; retain its upstream ymfm
+# dependencies even though expansion peripherals are not exposed by this bridge.
+foreach(COMPONENT opn adpcm ssg)
+  target_sources(clover_ares PRIVATE "${ARES_ROOT}/thirdparty/ymfm/src/ymfm_${COMPONENT}.cpp")
 endforeach()
 target_compile_features(clover_ares PUBLIC cxx_std_20)
 target_include_directories(clover_ares PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(clover_ares SYSTEM PRIVATE
-  "${ARES_ROOT}" "${ARES_ROOT}/ares" "${ARES_ROOT}/nall" "${ARES_ROOT}/thirdparty")
+  "${ARES_ROOT}" "${ARES_ROOT}/ares" "${ARES_ROOT}/nall" "${ARES_ROOT}/thirdparty"
+  "${ARES_ROOT}/thirdparty/ymfm/src")
 target_include_directories(clover_ares PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-target_compile_definitions(clover_ares PRIVATE CORE_SFC PROFILE_PERFORMANCE
+target_compile_definitions(clover_ares PRIVATE CORE_SFC CORE_FC PROFILE_PERFORMANCE
   CLOVER_ARES_REVISION="${ARES_REVISION}")
 if(MSVC)
   target_compile_options(clover_ares PRIVATE /bigobj /Zc:preprocessor /W0)
@@ -68,10 +82,13 @@ elseif(APPLE)
   target_link_libraries(clover_ares PRIVATE "${CLOVER_COREFOUNDATION}")
 endif()
 
-option(CLOVER_BUILD_TESTS "Build the self-authored SNES bridge smoke test" OFF)
+option(CLOVER_BUILD_TESTS "Build the self-authored SNES and NES bridge smoke tests" OFF)
 if(CLOVER_BUILD_TESTS)
   enable_testing()
   add_executable(clover_ares_smoke tests/smoke.cpp)
   target_link_libraries(clover_ares_smoke PRIVATE clover_ares)
   add_test(NAME clover_ares_smoke COMMAND clover_ares_smoke)
+  add_executable(clover_ares_nes_smoke tests/nes_smoke.cpp)
+  target_link_libraries(clover_ares_nes_smoke PRIVATE clover_ares)
+  add_test(NAME clover_ares_nes_smoke COMMAND clover_ares_nes_smoke)
 endif()

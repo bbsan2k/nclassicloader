@@ -1,10 +1,9 @@
 # Native stock SFROM import and audio restoration
 
-`portable/import/sfrom.cpp` provides the C++17, memory-only API
-`clover::importer::convertSFROM(const std::vector<uint8_t>&)`. It returns
-`{rom, status, metadata}` or throws `std::runtime_error`. It neither runs Nintendo
-programs nor uses subprocesses, network access, firmware, or replacement ROMs.
-Its only library dependency is the existing `third_party/vendor/json.hpp`.
+`rust/src/sfrom.rs` provides the memory-only `convert_sfrom` implementation.
+It returns converted ROM bytes and structured metadata or rejects the input.
+It neither runs Nintendo programs nor invokes subprocesses, network access,
+firmware, or replacement ROMs.
 
 ## Verified result
 
@@ -191,21 +190,15 @@ are interchangeable.
 No commercial game bytes are embedded in the self-authored synthetic fixtures.
 
 ```sh
-c++ -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -fsanitize=address,undefined \
-  -Ithird_party/vendor portable/import/sfrom.cpp portable/import/sfrom_tests.cpp \
-  -o .build/sfrom-restoration/sfrom-tests
-.build/sfrom-restoration/sfrom-tests
-.build/sfrom-restoration/sfrom-tests analysis/eur/usr/share/games/*/*.sfrom
-python3 .build/sfrom-restoration/extract-fixtures.py
-.build/sfrom-restoration/sfrom-tests .build/sfrom-restoration/regions/*/*.sfrom
+cargo test --locked --manifest-path rust/Cargo.toml sfrom::tests
+cargo build --locked --manifest-path rust/Cargo.toml --release
+python3 scripts/test_rust_sfrom.py
 ```
 
-Synthetic tests cover golden decoder values, all four filters, nonzero predictor
-history, scales 0/1/5/10/12/13/15, saturation, END/LOOP, repeated loop histories,
-backward and non-block-aligned direct offsets, stale high index bits, independent
-checksums (including mirrored non-power-of-two sizes), exact non-PCM extraction,
-malformed sections/records/chains, odd impossible PCM, header/flag errors, empty
-and nonempty extensions, and Japanese-title JSON serialization.
+Rust synthetic tests cover decoder values and rejection behavior. The optional
+six-archive round-trip check compares standalone conversions with the images
+written by Rust's profile importer; archived report data from historical
+C++-to-Rust parity runs is not required to build or run the application.
 
 ## Research and licensing boundary
 

@@ -52,14 +52,17 @@ pub(crate) fn valid_locale(locale: &str) -> bool {
 fn import_languages(files: &Files, root: &str, default: &str, output: &Path) -> SkinResult<()> {
     let prefix = format!("{root}strings/");
     let mut languages = Vec::new();
+    let mut seen = BTreeSet::new();
     for (path, bytes) in files {
-        let Some(locale) = path
-            .strip_prefix(&prefix)
-            .and_then(|value| value.strip_suffix("/strings.lng"))
-        else {
+        let Some(locale) = path.strip_prefix(&prefix).and_then(|value| {
+            value
+                .strip_suffix("/strings.lng")
+                .or_else(|| value.strip_suffix("/strings.json"))
+        }) else {
             continue;
         };
         require(valid_locale(locale), "Invalid language identifier")?;
+        require(seen.insert(locale), "Duplicate language table")?;
         require(
             bytes.len() <= 1024 * 1024,
             "Language table exceeds 1 MiB limit",
@@ -169,7 +172,7 @@ fn font(bytes: &[u8], output: &Path, name: &str) -> SkinResult<()> {
                 let code = u32le(bytes, j).to_string();
                 require(!glyphs.contains_key(&code), "Duplicate font glyph")?;
                 glyphs.insert(
-                    code,
+                    code.clone(),
                     json!({
                         "x": u16le(bytes, j + 4), "y": u16le(bytes, j + 6),
                         "width": u16le(bytes, j + 8), "height": u16le(bytes, j + 10),
@@ -177,6 +180,17 @@ fn font(bytes: &[u8], output: &Path, name: &str) -> SkinResult<()> {
                         "advance": i16le(bytes, j + 16),
                     }),
                 );
+                // Older NES Reed fonts encode whitespace without a drawable
+                // atlas cell (x=0xffff, with undefined y). Keep its advance,
+                // but never pass those sentinel rectangles to the renderer.
+                if u16le(bytes, j + 4) == u16::MAX
+                    && char::from_u32(u32le(bytes, j)).is_some_and(char::is_whitespace)
+                {
+                    let glyph = glyphs.get_mut(&code).expect("inserted glyph");
+                    for key in ["x", "y", "width", "height"] {
+                        glyph[key] = json!(0);
+                    }
+                }
             }
         } else if kind == 5 {
             require(size.is_multiple_of(10), "Invalid font kerning block")?;
@@ -278,14 +292,42 @@ fn component<'a>(node: &'a Value, path: &str, kind: &str) -> SkinResult<&'a Valu
 /// the existing importer. All source resources are copied, not modified.
 pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
     require(
-        ["snes-eur", "snes-usa", "shvc"].contains(&ui),
+        ["snes-eur", "snes-usa", "shvc", "nes", "hvc"].contains(&ui),
         "Unknown regional UI identity",
     )?;
-    let root = format!("usr/share/ui/{ui}/resources/");
+    let nes = matches!(ui, "nes" | "hvc");
+    let japanese = matches!(ui, "shvc" | "hvc");
+    let base = if nes {
+        "usr/share/clover-ui/".to_owned()
+    } else {
+        format!("usr/share/ui/{ui}/")
+    };
+    let root = format!("{base}resources/");
     for (source, target) in [
-        ("sprites/packed.png", "packed.png"),
-        ("sprites/packed.json", "packed.json"),
-        ("layout/asset/sprite/wallpaper/wall.png", "wall.png"),
+        (
+            if nes {
+                if japanese {
+                    "sprites/hvc.png"
+                } else {
+                    "sprites/nes.png"
+                }
+            } else {
+                "sprites/packed.png"
+            },
+            "packed.png",
+        ),
+        (
+            if nes {
+                if japanese {
+                    "sprites/hvc.json"
+                } else {
+                    "sprites/nes.json"
+                }
+            } else {
+                "sprites/packed.json"
+            },
+            "packed.json",
+        ),
         (
             "animation/cursor_thumbnails.spriteanim",
             "cursor-thumbnails.json",
@@ -294,19 +336,63 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
         ("sounds/hvc/se_sys_cursor.wav", "se_sys_cursor.wav"),
         ("sounds/hvc/se_sys_click.wav", "se_sys_click.wav"),
     ] {
-        write(&output.join(target), read(files, &root, source)?)?;
+        let bytes = read(files, &root, source)?;
+        if nes && target == "packed.json" {
+            let mut atlas: Value = serde_json::from_slice(bytes)
+                .map_err(|e| format!("Invalid NES sprite atlas: {e}"))?;
+            let sprites = atlas
+                .get_mut("sprites")
+                .and_then(Value::as_object_mut)
+                .ok_or("Missing NES sprite table")?;
+            for (alias, original) in [
+                ("screen_analog_preview.png", "capture_analog.png"),
+                (
+                    "screen_pixel_perfect_preview.png",
+                    "capture_pixelPerfect.png",
+                ),
+                ("switch_disable.png", "switch_off.png"),
+            ] {
+                if let Some(sprite) = sprites.get(original).cloned() {
+                    sprites.insert(alias.into(), sprite);
+                }
+            }
+            write_json(&output.join(target), &atlas)?;
+        } else {
+            write(&output.join(target), bytes)?;
+        }
+    }
+    if nes {
+        write(
+            &output.join("wall.png"),
+            read(files, &root, "sprites/wallpaper-dots.png")?,
+        )?;
+    } else {
+        write(
+            &output.join("wall.png"),
+            read(files, &root, "layout/asset/sprite/wallpaper/wall.png")?,
+        )?;
     }
     for name in ["title", "m", "s", "l", "copyright"] {
         let font_path = format!("fonts/{name}.font");
         let fallback = format!("fonts/{name}.fnt");
+        let nes_path = if matches!(name, "title" | "copyright") {
+            format!("usr/share/games/nes/kachikachi/{name}.fnt")
+        } else {
+            format!("{root}fonts/{ui}/{name}.fnt")
+        };
         let bytes = files
-            .get(&format!("{root}{font_path}"))
-            .or_else(|| files.get(&format!("{root}{fallback}")))
+            .get(&nes_path)
+            .filter(|_| nes)
+            .or_else(|| {
+                files
+                    .get(&format!("{root}{font_path}"))
+                    .or_else(|| files.get(&format!("{root}{fallback}")))
+            })
             .ok_or_else(|| format!("Image missing skin member: {font_path}"))?;
         font(bytes, output, name)?;
     }
 
-    let locale = if ui == "shvc" { "jpn_ja" } else { "usa_en" };
+    let locale = if japanese { "jpn_ja" } else { "usa_en" };
     import_languages(files, &root, locale, output)?;
 
     let palette = if ui == "shvc" {
@@ -316,9 +402,15 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
     } else {
         "eur"
     };
-    let palette_path = format!("scripts/env/colors_{palette}.lua");
+    let palette_path = if nes {
+        format!("scripts/colors_{ui}.lua")
+    } else {
+        format!("scripts/env/colors_{palette}.lua")
+    };
     let palette_hash = digest(read(files, &root, &palette_path)?);
     let expected_palette = match ui {
+        "nes" => "679e8f16ccd77ad74a366da70bfde8ed212303869c9005fc12cd84b9fe185d8b",
+        "hvc" => "70d94dd40873be9e92476958080545338e7196ab2710cec082026b62e40eef0c",
         "shvc" => "8a53966a583c45c115fe4d55aff76a56bb63b032512d1570f3879ba09c24a914",
         "snes-usa" => "1181691260ecb050374b10676c4d4c657dafbd143e886385853607949dd4951d",
         _ => "cd85ce84d70c31f83e2a17739e3869eae7790e973851fd4e8c03977ff609073a",
@@ -327,14 +419,34 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
         palette_hash == expected_palette,
         "Unverified regional palette revision",
     )?;
+    let mut colors = json!({
+        "title": if matches!(ui, "shvc" | "nes") { json!([255,255,255,255]) } else { json!([0,0,0,255]) },
+        "hud": if ui == "shvc" { json!([0,0,0,255]) } else { json!([255,255,255,255]) }
+    });
+    if ui == "nes" {
+        // Statically decoded from the hash-verified LuaJIT palette above.
+        // Values are normalized RGBA doubles in the carrier, rounded to 8-bit.
+        colors["background"] = json!([0, 21, 61, 255]);
+        colors["hud"] = json!([219, 43, 0, 255]);
+        colors["caption"] = json!([0, 0, 0, 255]);
+        colors["resume_hud"] = json!([219, 43, 0, 255]);
+        colors["resume_title"] = json!([219, 43, 0, 255]);
+        colors["resume_time"] = json!([0, 0, 0, 255]);
+        colors["resume_empty"] = json!([0, 0, 0, 255]);
+    } else if ui == "hvc" {
+        colors["background"] = json!([235, 226, 213, 255]);
+        colors["hud"] = json!([167, 0, 0, 255]);
+        colors["caption"] = json!([0, 0, 0, 255]);
+        colors["resume_hud"] = json!([0, 0, 0, 255]);
+        colors["resume_title"] = json!([255, 255, 255, 255]);
+        colors["resume_time"] = json!([255, 255, 255, 255]);
+        colors["resume_empty"] = json!([0, 0, 0, 255]);
+    }
     write_json(
         &output.join("theme.json"),
         &json!({
-            "ui": ui, "locale": locale, "region": if ui == "shvc" { "Japan" } else if ui == "snes-usa" { "USA" } else { "Europe" },
-            "colors": {
-                "title": if ui == "shvc" { json!([255,255,255,255]) } else { json!([0,0,0,255]) },
-                "hud": if ui == "shvc" { json!([0,0,0,255]) } else { json!([255,255,255,255]) }
-            },
+            "ui": ui, "locale": locale, "system": if nes { "nes" } else { "snes" }, "region": if japanese { "Japan" } else if matches!(ui, "snes-usa" | "nes") { "USA" } else { "Europe" },
+            "colors": colors,
             "paletteSource": format!("{root}{palette_path}"), "paletteSHA256": palette_hash
         }),
     )?;
@@ -379,12 +491,8 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
         positions.insert(key.to_owned(), position(&path)?);
     }
 
-    let dependencies: Value = serde_json::from_slice(read(
-        files,
-        &format!("usr/share/ui/{ui}/"),
-        "dependencies.json",
-    )?)
-    .map_err(|e| format!("Invalid Clover dependencies JSON: {e}"))?;
+    let dependencies: Value = serde_json::from_slice(read(files, &base, "dependencies.json")?)
+        .map_err(|e| format!("Invalid Clover dependencies JSON: {e}"))?;
     let resources = dependencies
         .get("resources")
         .and_then(Value::as_array)
@@ -507,8 +615,8 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
         },
         "cardSize": card_size,
         "cardSpacing": marker("narabe2")? - marker("narabe1")?,
-        "wallpaperDuration": serde_json::from_slice::<Value>(read(files, &root, "layout/lyt_wallpaper_default.sceneanimation")?)
-            .map_err(|e| format!("Invalid wallpaper animation JSON: {e}"))?.get("duration").ok_or("Missing wallpaper animation duration")?
+        "wallpaperDuration": if nes { json!(20.0) } else { serde_json::from_slice::<Value>(read(files, &root, "layout/lyt_wallpaper_default.sceneanimation")?)
+            .map_err(|e| format!("Invalid wallpaper animation JSON: {e}"))?.get("duration").ok_or("Missing wallpaper animation duration")?.clone() }
     });
     require(
         layout["cardSpacing"].as_f64().unwrap_or(0.0) > 0.0
@@ -521,6 +629,56 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_whitespace_has_advance_but_no_out_of_atlas_rectangle() {
+        let mut bm = b"BMF\x03".to_vec();
+        fn block(bm: &mut Vec<u8>, kind: u8, data: &[u8]) {
+            bm.push(kind);
+            bm.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            bm.extend_from_slice(data);
+        }
+        block(&mut bm, 1, &[12, 0]);
+        let mut common = vec![0; 15];
+        for at in [0, 2, 4, 6, 8] {
+            common[at] = 1;
+        }
+        block(&mut bm, 2, &common);
+        let mut glyph = vec![0; 20];
+        glyph[..4].copy_from_slice(&32_u32.to_le_bytes());
+        glyph[4..6].copy_from_slice(&u16::MAX.to_le_bytes());
+        glyph[6..8].copy_from_slice(&62839_u16.to_le_bytes());
+        glyph[8] = 2;
+        glyph[10] = 2;
+        glyph[16] = 6;
+        block(&mut bm, 4, &glyph);
+        let mut image = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut image, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255; 4])
+                .unwrap();
+        }
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&(bm.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(image.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&bm);
+        bytes.extend_from_slice(&image);
+        let output = std::env::temp_dir().join(format!("clover-whitespace-{}", std::process::id()));
+        font(&bytes, &output, "s").unwrap();
+        let result: Value =
+            serde_json::from_slice(&fs::read(output.join("font-s.json")).unwrap()).unwrap();
+        assert_eq!(result["glyphs"]["32"]["width"], 0);
+        assert_eq!(result["glyphs"]["32"]["advance"], 6);
+        // A drawable letter may not hide invalid atlas coordinates as whitespace.
+        let glyph_at = 9 + 4 + 7 + 20 + 5;
+        bytes[glyph_at..glyph_at + 4].copy_from_slice(&65_u32.to_le_bytes());
+        assert!(font(&bytes, &output, "s").is_err());
+        fs::remove_dir_all(output).unwrap();
+    }
 
     #[test]
     fn imports_every_language_and_retains_default_table() {

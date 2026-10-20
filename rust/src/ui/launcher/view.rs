@@ -1,6 +1,8 @@
 //! Launcher-only vector chrome and embedded typography; no console assets needed.
 use super::*;
 use fontdue::{Font, FontSettings, Metrics};
+#[path = "flags.rs"]
+mod flags;
 
 pub const WIDTH: u32 = 1200;
 pub const HEIGHT: u32 = 760;
@@ -43,6 +45,7 @@ pub struct View {
     fonts: [Font; 2],
     creator: TextureCreator<WindowContext>,
     glyphs: HashMap<(char, u16, bool), Glyph>,
+    flags: flags::Assets,
 }
 
 impl View {
@@ -59,10 +62,13 @@ impl View {
             )
             .map_err(str::to_owned)?,
         ];
+        let creator = canvas.texture_creator();
+        let flags = flags::Assets::new(&creator)?;
         Ok(Self {
             fonts,
-            creator: canvas.texture_creator(),
+            creator,
             glyphs: HashMap::new(),
+            flags,
         })
     }
 
@@ -178,13 +184,15 @@ impl View {
     pub fn draw(
         &mut self,
         canvas: &mut Canvas<Window>,
-        entries: &[Entry],
+        entries: &[&Entry],
         selected: usize,
         busy: bool,
         status: &str,
         error: bool,
         hover: Option<(f32, f32)>,
         focus: Option<usize>,
+        filter_label: &str,
+        controller_connected: bool,
         elapsed: f32,
     ) -> Result<(), String> {
         canvas.set_blend_mode(BlendMode::Blend);
@@ -324,13 +332,39 @@ impl View {
         self.text(
             canvas,
             &format!("YOUR LIBRARY  /  {} SOURCES", entries.len()),
-            272.0,
-            163.0,
+            530.0,
+            154.0,
             12,
             true,
             MUTED,
-            450.0,
+            285.0,
         )?;
+        for (label, rect) in ["ALL", "NES", "SNES"].into_iter().zip(FILTER_TABS) {
+            let active = label == filter_label;
+            let hot = hover.is_some_and(|(x, y)| point_inside(x, y, rect));
+            panel(
+                canvas,
+                rect,
+                if active {
+                    ACCENT
+                } else if hot && !busy {
+                    Color::RGB(45, 66, 80)
+                } else {
+                    Color::RGB(29, 44, 58)
+                },
+                6.0,
+            );
+            self.text(
+                canvas,
+                label,
+                rect.x + 14.0,
+                rect.y + 6.0,
+                13,
+                true,
+                if active { Color::RGB(12, 35, 38) } else { INK },
+                52.0,
+            )?;
+        }
         let page = selected / PAGE_SIZE;
         for (row, entry) in entries
             .iter()
@@ -362,6 +396,16 @@ impl View {
                 8.0,
             );
             let (title, region, version) = identity(entry);
+            self.text(
+                canvas,
+                system_label(entry),
+                rect.x + 438.0,
+                rect.y + 14.0,
+                12,
+                true,
+                if chosen { ACCENT } else { MUTED },
+                70.0,
+            )?;
             panel(
                 canvas,
                 FRect::new(rect.x + 14.0, rect.y + 12.0, 48.0, 38.0),
@@ -372,16 +416,11 @@ impl View {
                 },
                 6.0,
             );
-            self.text(
+            self.flags.draw(
                 canvas,
                 &region,
-                rect.x + 21.0,
-                rect.y + 24.0,
-                13,
-                true,
-                if chosen { ACCENT } else { MUTED },
-                42.0,
-            )?;
+                FRect::new(rect.x + 22.0, rect.y + 20.0, 32.0, 24.0),
+            );
             self.text(
                 canvas,
                 &title,
@@ -421,22 +460,18 @@ impl View {
             }
         }
         if entries.is_empty() {
+            let empty_title = if filter_label == "ALL" {
+                "Your library starts here.".to_owned()
+            } else {
+                format!("No {filter_label} versions found.")
+            };
             panel(
                 canvas,
                 FRect::new(264.0, 194.0, 556.0, 422.0),
                 Color::RGB(25, 36, 49),
                 10.0,
             );
-            self.text(
-                canvas,
-                "Your library starts here.",
-                294.0,
-                265.0,
-                28,
-                true,
-                INK,
-                490.0,
-            )?;
+            self.text(canvas, &empty_title, 294.0, 265.0, 28, true, INK, 490.0)?;
             self.text(
                 canvas,
                 "Import a supplied .hsqs or .tar.gz image to begin.",
@@ -475,11 +510,24 @@ impl View {
             Color::RGB(23, 34, 47),
             12.0,
         );
-        controller(canvas, 1010.0, 272.0);
-        let entry = entries.get(selected);
+        let entry = entries.get(selected).copied();
+        match entry.map(console) {
+            Some(Console::Nes) => nes_controller(canvas, 1010.0, 272.0, false),
+            Some(Console::Famicom) => nes_controller(canvas, 1010.0, 272.0, true),
+            Some(Console::Snes) => snes_controller(canvas, 1010.0, 272.0),
+            _ => {
+                panel(
+                    canvas,
+                    FRect::new(966.0, 234.0, 88.0, 76.0),
+                    Color::RGB(43, 59, 77),
+                    12.0,
+                );
+                self.text(canvas, "?", 993.0, 242.0, 44, true, MUTED, 50.0)?;
+            }
+        }
         let (title, region, version) = entry.map(identity).unwrap_or_else(|| {
             (
-                "SNES Classic".into(),
+                "Classic Menu".into(),
                 "ALL".into(),
                 "Your region. Your version.".into(),
             )
@@ -501,7 +549,18 @@ impl View {
             Color::RGB(48, 62, 76),
         );
         self.text(canvas, "REGION", 866.0, 482.0, 11, true, MUTED, 120.0)?;
-        self.text(canvas, &region, 866.0, 503.0, 18, true, INK, 120.0)?;
+        self.flags
+            .draw(canvas, &region, FRect::new(866.0, 505.0, 24.0, 18.0));
+        self.text(
+            canvas,
+            flags::Region::from_marker(&region).label(),
+            902.0,
+            503.0,
+            16,
+            true,
+            INK,
+            102.0,
+        )?;
         self.text(canvas, "SOURCE", 1014.0, 482.0, 11, true, MUTED, 130.0)?;
         self.text(
             canvas,
@@ -632,7 +691,7 @@ impl View {
         }
         self.text(
             canvas,
-            "Up / Down  Select     Enter  Launch     I  Import     D  Data folder     Esc  Quit",
+            if controller_connected { "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen" } else { "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen" },
             272.0,
             728.0,
             13,
@@ -644,7 +703,79 @@ impl View {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Console {
+    Nes,
+    Famicom,
+    Snes,
+    Unknown,
+}
+
+fn console(entry: &Entry) -> Console {
+    match entry {
+        Entry::Cached(profile) => {
+            let system = profile.manifest.get("system").and_then(Value::as_str);
+            let ui = profile
+                .manifest
+                .get("ui")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if ui == "hvc" || ui == "hvcj" {
+                Console::Famicom
+            } else if system == Some("nes") || ui == "nes" {
+                Console::Nes
+            } else if system == Some("snes") || matches!(ui, "snes-eur" | "snes-usa" | "shvc") {
+                Console::Snes
+            } else {
+                Console::Unknown
+            }
+        }
+        Entry::Image(path) => {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            if name.contains("dp-hvc-") || name.contains("dp-hvcj-") {
+                Console::Famicom
+            } else if name.contains("dp-nes-") {
+                Console::Nes
+            } else if name.contains("dp-snes") || name.contains("dp-shvc-") {
+                Console::Snes
+            } else {
+                Console::Unknown
+            }
+        }
+    }
+}
+
+pub(super) fn system_group(entry: &Entry) -> u8 {
+    match console(entry) {
+        Console::Nes | Console::Famicom => 0,
+        Console::Snes => 1,
+        Console::Unknown => 2,
+    }
+}
+
+pub(super) fn preview_matches(entry: &Entry, name: &str) -> bool {
+    match name {
+        "nes" => console(entry) == Console::Nes,
+        "famicom" => console(entry) == Console::Famicom,
+        "snes" => console(entry) == Console::Snes,
+        _ => false,
+    }
+}
+
+fn system_label(entry: &Entry) -> &'static str {
+    match console(entry) {
+        Console::Nes | Console::Famicom => "NES",
+        Console::Snes => "SNES",
+        Console::Unknown => "IMAGE",
+    }
+}
+
 fn identity(entry: &Entry) -> (String, String, String) {
+    let system = console(entry);
     let (region, version) = match entry {
         Entry::Cached(profile) => (
             profile
@@ -664,9 +795,10 @@ fn identity(entry: &Entry) -> (String, String, String) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let region = if name.contains("sneseur") {
                 "Europe"
-            } else if name.contains("snesusa") {
+            } else if name.contains("snesusa") || name.contains("dp-nes-") {
                 "USA"
-            } else if name.contains("shvc") {
+            } else if name.contains("shvc") || name.contains("dp-hvc-") || name.contains("dp-hvcj-")
+            {
                 "Japan"
             } else {
                 "Unknown"
@@ -686,12 +818,27 @@ fn identity(entry: &Entry) -> (String, String, String) {
         "Japan" => "JPN",
         _ => "IMG",
     };
-    let title = if region == "Japan" {
+    let title = if matches!(system, Console::Nes | Console::Famicom) {
+        if system == Console::Famicom {
+            "Famicom Classic".into()
+        } else {
+            "NES Classic".into()
+        }
+    } else if system == Console::Unknown {
+        "Classic Menu image".into()
+    } else if region == "Japan" {
         "Super Famicom".into()
     } else if region == "Unknown" {
         "SNES Classic image".into()
     } else {
-        format!("SNES Classic · {region}")
+        format!(
+            "SNES Classic · {}",
+            if region == "USA" {
+                "United States"
+            } else {
+                region.as_str()
+            }
+        )
     };
     let version = if let Some(value) = version.strip_prefix("release-v") {
         format!("Version {}", value.split('-').next().unwrap_or(value))
@@ -699,6 +846,101 @@ fn identity(entry: &Entry) -> (String, String, String) {
         version
     };
     (title, chip.into(), version)
+}
+
+/// A stable visible-release key for suppressing an image when its imported,
+/// playable profile is already present in the launcher.
+pub(super) fn release_key(entry: &Entry) -> Option<(String, String, String)> {
+    let (title, region, _) = identity(entry);
+    if region == "IMG" {
+        return None;
+    }
+    let version = match entry {
+        Entry::Cached(profile) => profile.manifest.get("version")?.as_str()?,
+        Entry::Image(path) => path
+            .file_name()?
+            .to_str()?
+            .split("release-v")
+            .nth(1)?
+            .split('-')
+            .next()?,
+    };
+    if version.is_empty() || version == "unknown" || version == "Custom image" {
+        return None;
+    }
+    Some((title, region, version.to_owned()))
+}
+
+fn nes_controller(canvas: &mut Canvas<Window>, x: f32, y: f32, famicom: bool) {
+    // Original vector illustration: no imported console artwork is bundled.
+    let shell = if famicom {
+        Color::RGB(150, 40, 49)
+    } else {
+        Color::RGB(190, 198, 204)
+    };
+    let face = if famicom {
+        Color::RGB(205, 179, 111)
+    } else {
+        Color::RGB(31, 39, 46)
+    };
+    let dark = Color::RGB(17, 25, 32);
+    panel(
+        canvas,
+        FRect::new(x - 120.0, y - 43.0, 240.0, 94.0),
+        Color::RGB(13, 24, 35),
+        8.0,
+    );
+    panel(
+        canvas,
+        FRect::new(x - 118.0, y - 49.0, 236.0, 94.0),
+        shell,
+        6.0,
+    );
+    panel(
+        canvas,
+        FRect::new(x - 108.0, y - 39.0, 216.0, 74.0),
+        face,
+        3.0,
+    );
+    for dy in [-25.0, -15.0, -5.0, 26.0] {
+        panel(
+            canvas,
+            FRect::new(x - 24.0, y + dy, 65.0, 5.0),
+            if famicom {
+                shell
+            } else {
+                Color::RGB(85, 97, 107)
+            },
+            2.0,
+        );
+    }
+    panel(canvas, FRect::new(x - 91.0, y - 6.0, 47.0, 15.0), dark, 2.0);
+    panel(
+        canvas,
+        FRect::new(x - 75.0, y - 22.0, 15.0, 47.0),
+        dark,
+        2.0,
+    );
+    for dx in [-18.0, 13.0] {
+        panel(
+            canvas,
+            FRect::new(x + dx, y + 10.0, 22.0, 8.0),
+            Color::RGB(109, 122, 132),
+            4.0,
+        );
+    }
+    for dx in [60.0, 89.0] {
+        panel(
+            canvas,
+            FRect::new(x + dx - 13.0, y - 1.0, 26.0, 26.0),
+            if famicom {
+                shell
+            } else {
+                Color::RGB(215, 50, 61)
+            },
+            13.0,
+        );
+    }
 }
 
 fn fill(canvas: &mut Canvas<Window>, rect: FRect, color: Color) {
@@ -735,7 +977,7 @@ fn panel(canvas: &mut Canvas<Window>, rect: FRect, color: Color, radius: f32) {
     }
 }
 
-fn controller(canvas: &mut Canvas<Window>, x: f32, y: f32) {
+fn snes_controller(canvas: &mut Canvas<Window>, x: f32, y: f32) {
     panel(
         canvas,
         FRect::new(x - 118.0, y - 42.0, 236.0, 94.0),
@@ -800,6 +1042,57 @@ mod tests {
         assert_eq!(title, "SNES Classic · Europe");
         assert_eq!(region, "EUR");
         assert_eq!(version, "Version 2.0.14");
+    }
+    #[test]
+    fn cached_and_filename_regions_use_the_same_flags() {
+        for (filename, region, label) in [
+            ("dp-sneseur-release-v2.hsqs", "Europe", "Europe"),
+            ("dp-snesusa-release-v2.hsqs", "USA", "United States"),
+            ("dp-shvc-release-v2.hsqs", "Japan", "Japan"),
+            ("custom.hsqs", "Unknown", "Unknown"),
+        ] {
+            let cached = Entry::Cached(crate::profile::Profile {
+                directory: PathBuf::from("cache-hash"),
+                manifest: json!({"system":"snes", "region":region}),
+            });
+            let image = Entry::Image(PathBuf::from(filename));
+            let cached_region = flags::Region::from_marker(&identity(&cached).1);
+            let image_region = flags::Region::from_marker(&identity(&image).1);
+            assert_eq!(cached_region, image_region);
+            assert_eq!(cached_region.label(), label);
+        }
+    }
+    #[test]
+    fn controllers_distinguish_both_systems_and_unknown_images() {
+        for (name, expected) in [
+            ("dp-nes-release-v1.0.7.hsqs", Console::Nes),
+            ("kernel-dp-hvc-release-v1.0.5.img", Console::Famicom),
+            ("dp-hvcj-release-v3.0.1.hsqs", Console::Famicom),
+            ("dp-snesusa-release-v2.0.14.hsqs", Console::Snes),
+            ("dp-shvc-release-v2.0.12.hsqs", Console::Snes),
+            ("custom.hsqs", Console::Unknown),
+        ] {
+            assert_eq!(console(&Entry::Image(PathBuf::from(name))), expected);
+        }
+    }
+    #[test]
+    fn cached_controller_uses_manifest_not_profile_directory_name() {
+        for (manifest, expected) in [
+            (json!({"system":"nes","ui":"hvc"}), Console::Famicom),
+            (
+                json!({"system":"nes","ui":"nes","region":"Japan"}),
+                Console::Nes,
+            ),
+            (json!({"ui":"shvc"}), Console::Snes),
+            (json!({"system":"snes"}), Console::Snes),
+            (json!({}), Console::Unknown),
+        ] {
+            let entry = Entry::Cached(crate::profile::Profile {
+                directory: PathBuf::from("hash-v7"),
+                manifest,
+            });
+            assert_eq!(console(&entry), expected);
+        }
     }
     #[test]
     fn rows_and_buttons_do_not_overlap() {

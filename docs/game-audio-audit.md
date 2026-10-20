@@ -29,78 +29,27 @@ silent run of one sample after startup. The old zero-queue refill is replaced
 with pre-drain replenishment. Test: `scripts/test_audio_playback.py`; result:
 `analysis/menu-audio-loop-verification.json`. No user image/cache was modified.
 
-`portable/core/tests/game_audit.cpp` drives the real `clover::AresCore`, with no
-SDL, console host executables, scripts from an image, or audio device required.
-Link it to `clover_ares`, include `portable/core` and `third_party/vendor`, and
-compile as C++20. No core API or CMake changes are required by this source.
-
-Standalone build used on macOS, after building the existing core:
+Current game smoke audits run through the Rust UI and the same Rust-to-ares
+wrapper used by the application. For a prepared profile:
 
 ```sh
-mkdir -p .build/game-audit
-c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic \
-  -Iportable/core -Ithird_party/vendor portable/core/tests/game_audit.cpp \
-  .build/portable/portable/core/libclover_ares.a \
-  -framework Cocoa -framework IOKit -o .build/game-audit/game_audit
+clover-rust run --assets PROFILE/assets --data-dir PROFILE/data \
+  --audit-games .build/game-audio-audit
 ```
 
-## Invocation
+The audit executes each imported supported game for 600 frames, injects Start
+and action-button inputs, checks for video/audio output and finite samples, then
+save/replays 30 frames. Its SRAM and state files are isolated under
+`OUTPUT/runtime/`; the JSON summary is written to `OUTPUT/games.json`. It does
+not use an audio device or modify the source image. Blocked entries (such as
+Super Mario Kart without DSP1B) are reported rather than supplied with guessed
+firmware.
 
-```text
-game_audit ROM SAVE_DIRECTORY FIRMWARE_DIRECTORY FRAMES REPORT.json [AUDIO.wav]
-           [--press-start FRAME] [--press-b FRAME] [--hold-frames N]
-```
-
-Example with an already imported profile (replace `PROFILE` with its actual
-directory; this does **not** import or execute a host program from an image):
-
-```sh
-.build/game-audit/game_audit \
-  PROFILE/assets/roms/CLV-P-SADGE.sfc \
-  analysis/game-audio/manual-starfox/saves PROFILE/assets/firmware \
-  600 analysis/game-audio/manual-starfox/report.json \
-  analysis/game-audio/manual-starfox/audio.wav \
-  --press-start 300 --press-b 420
-```
-
-Always use a dedicated audit save directory, never the user's active saves or
-settings. ROMs and firmware are read-only; normal core SRAM persistence writes
-under the explicitly supplied save directory. Use a new directory for a clean
-boot comparison. Existing reports/captures at the specified output paths are
-overwritten. Keep output paths separate from input files.
-
-Input frame numbers are zero-based. Start is mask bit 3 and B is bit 0; each
-scheduled press lasts 12 frames by default (or the run length for shorter runs).
-Overlapping presses combine their masks. Presses outside the requested frame
-range have no effect. There is no automatic menu navigation or guarantee that
-this particular schedule enters gameplay for every title/region.
-
-Exit status 0 means the requested frames completed, every sampled float was
-finite, stereo buffer lengths were even, at least one sample exceeded `1e-5`,
-overall RMS exceeded `1e-5`, at least one valid nonblack video frame appeared,
-and the core reported no run/persistence error. Exit 1 is an audit failure;
-usage/report-write failures return 2. Load failures still produce JSON.
-
-Artifacts:
-
-* JSON: actual sample count, finite/nonfinite and nonzero counts, peak, RMS,
-  AC RMS, mean, samples at magnitude >=1, above-threshold count, separate L/R
-  statistics, audio/video first activity frame and diagnostic windows.
-* Optional streaming 48 kHz stereo PCM16 WAV. Statistics are calculated on the
-  **original floats**, before quantization. WAV conversion clamps to [-1, 1],
-  maps to +/-32767, and replaces nonfinite values with zero while failing the
-  audit. RIFF size overflow is rejected.
-* `REPORT.ppm`: final frame, P6 RGB; `REPORT.nonblack.ppm`: earliest frame with
-  the largest number of nonblack pixels observed. PPM avoids image-library
-  dependencies. Video alpha is ignored for black detection. Changed-frame
-  count uses an RGB rolling hash, not a collision-proof identity.
-
-Audio is streamed, not accumulated. Statistics retain at most 120 windows;
-each normally spans 60 frames (larger windows for long runs). Screenshots are
-bounded to two files. A black final transition does not discard earlier visible
-evidence. These checks do not prove correct gameplay, music accuracy, human
-audibility, or functioning frontend/device playback. A static nonblack error
-screen can pass the video check; inspect captures and activity counts.
+Historical numeric measurements below came from the retired C++ audit helper.
+They remain useful evidence for those exact local runs, but are not a current
+product dependency or a claim of complete gameplay, accurate music, or human
+audibility. The current Rust exercise checks buffering and core output; physical
+speaker/headphone quality still needs listening tests.
 
 ## Observed supported-profile sanity run
 
