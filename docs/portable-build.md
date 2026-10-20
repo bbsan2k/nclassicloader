@@ -28,6 +28,24 @@ Windows uses a static MSVC runtime. Linux packages do not bundle host graphics,
 audio, or file-dialog services. No game image, firmware, ROM, or imported asset
 is included in the default packages.
 
+### Linux prerequisites (Ubuntu/Debian)
+
+In addition to the compiler/toolchain requirements above, install SDL's host
+development libraries before building:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+  libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev \
+  libasound2-dev libpulse-dev libudev-dev libwayland-dev \
+  libegl1-mesa-dev libgl1-mesa-dev
+```
+
+`libxtst-dev` provides the XTest headers/library required by SDL's enabled X11
+backend. Without it, configuration fails with `Couldn't find dependency package
+for XTEST`. CI installs the same set; no upstream SDL changes are needed.
+
 ## Validation
 
 The build runs CTest for the ares bridge and (on macOS) the native-menu adapter.

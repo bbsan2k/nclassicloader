@@ -24,7 +24,13 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxkbcommon-dev libasound2-dev libpulse-dev libudev-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libasound2-dev libpulse-dev libudev-dev libwayland-dev \
+            libegl1-mesa-dev libgl1-mesa-dev
       - name: Build Rust native app and package
         run: python scripts/build-rust-desktop.py
       - name: Rust unit tests and lint
