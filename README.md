@@ -1,10 +1,16 @@
 # Classic Menu — Clover reconstruction
 
+[![Build and test](https://github.com/bbsan2k/nclassicloader/actions/workflows/portable.yml/badge.svg?branch=main)](https://github.com/bbsan2k/nclassicloader/actions/workflows/portable.yml)
+[![Desktop build targets](https://img.shields.io/badge/build_targets-macOS%20%7C%20Windows%20%7C%20Linux-2088ff)](docs/platform-builds.md)
+[![iOS/tvOS library checks only](https://img.shields.io/badge/iOS%20%2F%20tvOS-library_checks_only-8e8e93?logo=apple)](docs/platform-builds.md)
+[![WebAssembly library check only](https://img.shields.io/badge/WebAssembly-library_check_only-654ff0?logo=webassembly&logoColor=white)](docs/platform-builds.md)
+[![GitHub issues](https://img.shields.io/github/issues/bbsan2k/nclassicloader)](https://github.com/bbsan2k/nclassicloader/issues)
+[![GitHub stars](https://img.shields.io/github/stars/bbsan2k/nclassicloader?style=flat)](https://github.com/bbsan2k/nclassicloader/stargazers)
+
 [![Rust](https://img.shields.io/badge/frontend-Rust-dea584?logo=rust)](rust/)
 [![ares](https://img.shields.io/badge/emulation-ares-7057ff)](https://github.com/ares-emulator/ares)
 [![SDL3](https://img.shields.io/badge/platform-SDL3-194b8d)](https://github.com/libsdl-org/SDL)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![CI configured](https://img.shields.io/badge/CI-GitHub_Actions-2088ff?logo=githubactions&logoColor=white)](.github/workflows/portable.yml)
 [![Vibe coded](https://img.shields.io/badge/vibe-coded-ff69b4)](#about-this-project)
 [![REA assisted](https://img.shields.io/badge/reverse_engineering-REA-00897b)](docs/reverse-engineering.md)
 
