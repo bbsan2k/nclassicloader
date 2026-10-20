@@ -1,0 +1,28 @@
+[package]
+name = "clover-portable"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Rust frontend and image importer for Classic Menu"
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+sha2 = "0.10"
+serde_json = "1"
+png = "0.17"
+fontdue = { version = "0.9", optional = true }
+sdl3 = { version = "=0.19.0", default-features = false, features = ["unsafe_textures"], optional = true }
+sdl3-sys = { version = "=0.7.1", default-features = false, features = ["no-link"], optional = true }
+
+[lib]
+name = "clover_portable"
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib"]
+
+[features]
+native-ares = []
+native-app = ["dep:sdl3", "dep:sdl3-sys", "dep:fontdue", "native-ares"]
+
+[[bin]]
+name = "clover-rust"
+path = "src/main.rs"

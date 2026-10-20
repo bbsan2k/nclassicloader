@@ -1,0 +1,14 @@
+{
+  "repositories": {
+    "ares": {"url": "https://github.com/ares-emulator/ares.git", "commit": "9408cb43d4948fc3ea6e152a307a34348df3fe04"},
+    "SDL": {"url": "https://github.com/libsdl-org/SDL.git", "commit": "fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", "tag": "release-3.4.16"},
+    "zlib": {"url": "https://github.com/madler/zlib.git", "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498", "tag": "v1.3.2"}
+  },
+  "files": {
+    "stb_image_write.h": {"url": "https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image_write.h", "sha256": "cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05"},
+    "json.hpp": {"url": "https://raw.githubusercontent.com/nlohmann/json/55f93686c01528224f448c19128836e7df245f72/single_include/nlohmann/json.hpp", "sha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63"},
+    "json-LICENSE.MIT": {"url": "https://raw.githubusercontent.com/nlohmann/json/55f93686c01528224f448c19128836e7df245f72/LICENSE.MIT", "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"},
+    "stb_image.h": {"url": "https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image.h", "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"},
+    "stb-LICENSE": {"url": "https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/LICENSE", "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"}
+  }
+}

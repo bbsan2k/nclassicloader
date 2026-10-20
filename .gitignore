@@ -1,0 +1,65 @@
+# Local builds, packages, extracted analysis, and private input images.
+/.build/
+/dist/
+/analysis/
+/SNES-Mini-Kernels/
+/NES-Mini-Kernels/
+/import-test-*/
+/rust/target/
+/target/
+
+# Pinned upstream sources are acquired by scripts/bootstrap-portable.py.
+/third_party/ares/
+/third_party/SDL/
+/third_party/zlib/
+
+# Console content, firmware, imported resources, saves, and captures.
+*.img
+*.hsqs
+*.squashfs
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.nes
+*.fds
+*.qd
+*.sfc
+*.smc
+*.sfrom
+*.rom
+*.bin
+*.state
+*.sram
+*.sav
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.lng
+*.scn
+*.spriteanim
+*.fnt
+*.font
+
+# Compiled outputs and local tooling state. OFL-licensed launcher TTFs are
+# intentional source resources, not compiled application binaries.
+*.app/
+*.dSYM/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.rlib
+*.rmeta
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+.idea/
+.vscode/
