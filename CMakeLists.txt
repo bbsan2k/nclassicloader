@@ -28,6 +28,11 @@ add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
 
 add_subdirectory(portable/core)
 
+# Cargo links these archives outside CMake's dependency graph. Build them on
+# every platform, even when no native target (such as AppKit) depends on SDL.
+# Keep SDL's unrelated helper targets excluded from the default build.
+add_custom_target(clover_native_libraries ALL DEPENDS clover_ares SDL3-static)
+
 if(CLOVER_BUILD_TESTS)
   enable_testing()
 endif()
