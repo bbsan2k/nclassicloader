@@ -1,11 +1,13 @@
 //! Decode only the static, hash-identified Clover UI data used by the menu.
 //! Lua resources are treated as bytes; no console scripts are executed.
 
+use crate::import_storage::{self, NativeWriteBackend, WriteBackend, WriteError};
 use crate::{hash::digest, image_reader::Files};
 use serde_json::{Value, json};
+#[cfg(test)]
+use std::fs;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::Path,
 };
 
@@ -26,30 +28,31 @@ fn read<'a>(files: &'a Files, root: &str, relative: &str) -> SkinResult<&'a [u8]
         .ok_or_else(|| format!("Image missing skin member: {relative}"))
 }
 
-fn write(path: &Path, bytes: &[u8]) -> SkinResult<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create skin output directory: {e}"))?;
-    }
-    fs::write(path, bytes).map_err(|e| format!("Cannot write decoded skin: {e}"))
+fn write<B: WriteBackend>(backend: &mut B, path: &Path, bytes: &[u8]) -> SkinResult<()> {
+    import_storage::write_bytes_with(backend, path, bytes).map_err(|error| match error {
+        WriteError::Directory(error) => format!("Cannot create skin output directory: {error}"),
+        WriteError::File(error) => format!("Cannot write decoded skin: {error}"),
+    })
 }
 
-fn write_json(path: &Path, value: &Value) -> SkinResult<()> {
+fn write_json<B: WriteBackend>(backend: &mut B, path: &Path, value: &Value) -> SkinResult<()> {
     let mut bytes =
         serde_json::to_vec_pretty(value).map_err(|e| format!("Cannot encode skin JSON: {e}"))?;
     bytes.push(b'\n');
-    write(path, &bytes)
+    write(backend, path, &bytes)
 }
 
 pub(crate) fn valid_locale(locale: &str) -> bool {
-    !locale.is_empty()
-        && locale.len() <= 24
-        && locale
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    crate::frontend::languages::valid_locale(locale)
 }
 
-fn import_languages(files: &Files, root: &str, default: &str, output: &Path) -> SkinResult<()> {
+fn import_languages<B: WriteBackend>(
+    files: &Files,
+    root: &str,
+    default: &str,
+    output: &Path,
+    backend: &mut B,
+) -> SkinResult<()> {
     let prefix = format!("{root}strings/");
     let mut languages = Vec::new();
     let mut seen = BTreeSet::new();
@@ -82,11 +85,12 @@ fn import_languages(files: &Files, root: &str, default: &str, output: &Path) -> 
         )?;
         let table = json!({"locale": locale, "strings": strings, "source": path});
         write_json(
+            backend,
             &output.join("languages").join(format!("{locale}.json")),
             &table,
         )?;
         if locale == default {
-            write_json(&output.join("strings.json"), &table)?;
+            write_json(backend, &output.join("strings.json"), &table)?;
         }
         languages.push(locale.to_owned());
         require(languages.len() <= 64, "Too many language tables")?;
@@ -96,6 +100,7 @@ fn import_languages(files: &Files, root: &str, default: &str, output: &Path) -> 
         "Missing default language table",
     )?;
     write_json(
+        backend,
         &output.join("languages.json"),
         &json!({"schema": 1, "default": default, "locales": languages}),
     )
@@ -113,7 +118,12 @@ fn i16le(bytes: &[u8], p: usize) -> i16 {
     i16::from_le_bytes([bytes[p], bytes[p + 1]])
 }
 
-fn font(bytes: &[u8], output: &Path, name: &str) -> SkinResult<()> {
+fn font<B: WriteBackend>(
+    bytes: &[u8],
+    output: &Path,
+    name: &str,
+    backend: &mut B,
+) -> SkinResult<()> {
     require(
         bytes.len() >= 9 && bytes[0] == 1,
         "Unsupported Reed font container",
@@ -221,8 +231,12 @@ fn font(bytes: &[u8], output: &Path, name: &str) -> SkinResult<()> {
             "Glyph outside atlas",
         )?;
     }
-    write_json(&output.join(format!("font-{name}.json")), &result)?;
-    write(&output.join(format!("font-{name}.png")), &bytes[end..])
+    write_json(backend, &output.join(format!("font-{name}.json")), &result)?;
+    write(
+        backend,
+        &output.join(format!("font-{name}.png")),
+        &bytes[end..],
+    )
 }
 
 type Matrix = [f64; 6];
@@ -291,6 +305,15 @@ fn component<'a>(node: &'a Value, path: &str, kind: &str) -> SkinResult<&'a Valu
 /// Generate the same profile-local assets and static render specifications as
 /// the existing importer. All source resources are copied, not modified.
 pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
+    prepare_skin_with(files, ui, output, &mut NativeWriteBackend)
+}
+
+pub(crate) fn prepare_skin_with<B: WriteBackend>(
+    files: &Files,
+    ui: &str,
+    output: &Path,
+    backend: &mut B,
+) -> SkinResult<()> {
     require(
         ["snes-eur", "snes-usa", "shvc", "nes", "hvc"].contains(&ui),
         "Unknown regional UI identity",
@@ -356,18 +379,20 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
                     sprites.insert(alias.into(), sprite);
                 }
             }
-            write_json(&output.join(target), &atlas)?;
+            write_json(backend, &output.join(target), &atlas)?;
         } else {
-            write(&output.join(target), bytes)?;
+            write(backend, &output.join(target), bytes)?;
         }
     }
     if nes {
         write(
+            backend,
             &output.join("wall.png"),
             read(files, &root, "sprites/wallpaper-dots.png")?,
         )?;
     } else {
         write(
+            backend,
             &output.join("wall.png"),
             read(files, &root, "layout/asset/sprite/wallpaper/wall.png")?,
         )?;
@@ -389,11 +414,11 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
                     .or_else(|| files.get(&format!("{root}{fallback}")))
             })
             .ok_or_else(|| format!("Image missing skin member: {font_path}"))?;
-        font(bytes, output, name)?;
+        font(bytes, output, name, backend)?;
     }
 
     let locale = if japanese { "jpn_ja" } else { "usa_en" };
-    import_languages(files, &root, locale, output)?;
+    import_languages(files, &root, locale, output, backend)?;
 
     let palette = if ui == "shvc" {
         "jpn"
@@ -443,6 +468,7 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
         colors["resume_empty"] = json!([0, 0, 0, 255]);
     }
     write_json(
+        backend,
         &output.join("theme.json"),
         &json!({
             "ui": ui, "locale": locale, "system": if nes { "nes" } else { "snes" }, "region": if japanese { "Japan" } else if matches!(ui, "snes-usa" | "nes") { "USA" } else { "Europe" },
@@ -623,12 +649,61 @@ pub fn prepare_skin(files: &Files, ui: &str, output: &Path) -> SkinResult<()> {
             && layout["wallpaperDuration"].as_f64().unwrap_or(0.0) > 0.0,
         "Invalid scene timing/spacing",
     )?;
-    write_json(&output.join("layout.json"), &layout)
+    write_json(backend, &output.join("layout.json"), &layout)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        cell::RefCell,
+        io::{self, Write},
+        rc::Rc,
+    };
+
+    type RecordedWrites = Rc<RefCell<Vec<(std::path::PathBuf, Vec<u8>)>>>;
+
+    #[derive(Clone)]
+    struct RecordingBackend {
+        writes: RecordedWrites,
+        fail_path: Option<std::path::PathBuf>,
+    }
+
+    struct RecordingFile {
+        writes: RecordedWrites,
+    }
+
+    impl Write for RecordingFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut writes = self.writes.borrow_mut();
+            let (_, output) = writes.last_mut().expect("file creation was recorded");
+            output.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl WriteBackend for RecordingBackend {
+        type File = RecordingFile;
+
+        fn create_dir_all(&mut self, _path: &Path) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn create_file(&mut self, path: &Path) -> io::Result<Self::File> {
+            if self.fail_path.as_deref() == Some(path) {
+                return Err(io::Error::other("injected file creation failure"));
+            }
+            let path = path.to_owned();
+            self.writes.borrow_mut().push((path.clone(), Vec::new()));
+            Ok(RecordingFile {
+                writes: self.writes.clone(),
+            })
+        }
+    }
 
     #[test]
     fn legacy_whitespace_has_advance_but_no_out_of_atlas_rectangle() {
@@ -668,7 +743,7 @@ mod tests {
         bytes.extend_from_slice(&bm);
         bytes.extend_from_slice(&image);
         let output = std::env::temp_dir().join(format!("clover-whitespace-{}", std::process::id()));
-        font(&bytes, &output, "s").unwrap();
+        font(&bytes, &output, "s", &mut NativeWriteBackend).unwrap();
         let result: Value =
             serde_json::from_slice(&fs::read(output.join("font-s.json")).unwrap()).unwrap();
         assert_eq!(result["glyphs"]["32"]["width"], 0);
@@ -676,7 +751,7 @@ mod tests {
         // A drawable letter may not hide invalid atlas coordinates as whitespace.
         let glyph_at = 9 + 4 + 7 + 20 + 5;
         bytes[glyph_at..glyph_at + 4].copy_from_slice(&65_u32.to_le_bytes());
-        assert!(font(&bytes, &output, "s").is_err());
+        assert!(font(&bytes, &output, "s", &mut NativeWriteBackend).is_err());
         fs::remove_dir_all(output).unwrap();
     }
 
@@ -690,7 +765,7 @@ mod tests {
                 serde_json::to_vec(&json!({"strings": {"menu": text}})).unwrap(),
             );
         }
-        import_languages(&files, "root/", "usa_en", &output).unwrap();
+        import_languages(&files, "root/", "usa_en", &output, &mut NativeWriteBackend).unwrap();
         let index: Value =
             serde_json::from_slice(&fs::read(output.join("languages.json")).unwrap()).unwrap();
         assert_eq!(index["locales"].as_array().unwrap().len(), 3);
@@ -702,6 +777,76 @@ mod tests {
             serde_json::from_slice(&fs::read(output.join("strings.json")).unwrap()).unwrap();
         assert_eq!(default["locale"], "usa_en");
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn language_writes_use_injected_backend_in_order_with_expected_json() {
+        let output = Path::new("skin-output");
+        let mut files = Files::new();
+        for (locale, text) in [("usa_en", "Menu"), ("eur_de", "Menü"), ("eur_ru", "Меню")] {
+            files.insert(
+                format!("root/strings/{locale}/strings.lng"),
+                serde_json::to_vec(&json!({"strings": {"menu": text}})).unwrap(),
+            );
+        }
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = RecordingBackend {
+            writes: writes.clone(),
+            fail_path: None,
+        };
+        import_languages(&files, "root/", "usa_en", output, &mut backend).unwrap();
+
+        let writes = writes.borrow();
+        let paths: Vec<_> = writes.iter().map(|(path, _)| path.as_path()).collect();
+        assert_eq!(
+            paths,
+            [
+                Path::new("skin-output/languages/eur_de.json"),
+                Path::new("skin-output/languages/eur_ru.json"),
+                Path::new("skin-output/languages/usa_en.json"),
+                Path::new("skin-output/strings.json"),
+                Path::new("skin-output/languages.json"),
+            ]
+        );
+        let german: Value = serde_json::from_slice(&writes[0].1).unwrap();
+        assert_eq!(
+            german,
+            json!({"locale":"eur_de", "strings":{"menu":"Menü"}, "source":"root/strings/eur_de/strings.lng"})
+        );
+        let default: Value = serde_json::from_slice(&writes[3].1).unwrap();
+        assert_eq!(default["locale"], "usa_en");
+        assert_eq!(default["strings"]["menu"], "Menu");
+        let index: Value = serde_json::from_slice(&writes[4].1).unwrap();
+        assert_eq!(
+            index,
+            json!({"schema":1, "default":"usa_en", "locales":["eur_de", "eur_ru", "usa_en"]})
+        );
+    }
+
+    #[test]
+    fn language_file_creation_failure_preserves_context_and_stops_writes() {
+        let output = Path::new("skin-output");
+        let mut files = Files::new();
+        for locale in ["eur_de", "usa_en"] {
+            files.insert(
+                format!("root/strings/{locale}/strings.lng"),
+                br#"{"strings":{"menu":"Menu"}}"#.to_vec(),
+            );
+        }
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = RecordingBackend {
+            writes: writes.clone(),
+            fail_path: Some(output.join("languages/usa_en.json")),
+        };
+        let error = import_languages(&files, "root/", "usa_en", output, &mut backend).unwrap_err();
+        assert!(error.starts_with("Cannot write decoded skin:"), "{error}");
+        assert!(error.contains("injected file creation failure"), "{error}");
+        let paths: Vec<_> = writes
+            .borrow()
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect();
+        assert_eq!(paths, [output.join("languages/eur_de.json")]);
     }
 
     #[test]
@@ -718,7 +863,8 @@ mod tests {
                 &files,
                 "root/",
                 "usa_en",
-                Path::new("unused-language-output")
+                Path::new("unused-language-output"),
+                &mut NativeWriteBackend,
             )
             .is_err()
         );

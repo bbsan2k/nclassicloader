@@ -19,6 +19,7 @@ def main():
     if not (BUILD / "CMakeCache.txt").is_file():
         env.setdefault("CMAKE_GENERATOR", "Ninja")
     run([sys.executable, ROOT / "scripts/bootstrap-portable.py"], env=env)
+    run([sys.executable, ROOT / "scripts/test-apple-compat.py"], env=env)
     run(["cmake", "-S", ROOT, "-B", BUILD, "-DCMAKE_BUILD_TYPE=Release",
          "-DCLOVER_BUILD_TESTS=ON"], env=env)
     run(["cmake", "--build", BUILD, "--config", "Release", "--parallel", "3"], env=env)

@@ -1,13 +1,15 @@
 //! Stock-style full-screen toolbar pages. Geometry follows defaultscene.scn;
 //! custom emulator controls live on their own, explicitly named page.
 use super::*;
+use crate::frontend::menu_input::{Key, KeyEvent};
+use crate::frontend::toolbar_navigation as navigation;
 
 const LANGUAGES: [&str; 9] = [
     "usa_en", "eur_fr", "eur_de", "eur_es", "eur_it", "eur_nl", "eur_pt", "eur_ru", "jpn_ja",
 ];
 
 impl App {
-    fn toolbar_page(&self) -> Option<usize> {
+    pub(super) fn toolbar_page(&self) -> Option<usize> {
         if self.panel == "settings" {
             Some(1)
         } else {
@@ -703,115 +705,66 @@ impl App {
         self.actions.push("help".into());
     }
 
-    pub(super) fn toolbar_key(
-        &mut self,
-        key: Scancode,
-        repeat: bool,
-        canvas: &Canvas<Window>,
-    ) -> bool {
+    pub(super) fn toolbar_key(&mut self, event: KeyEvent, canvas: &Canvas<Window>) -> bool {
         let Some(page) = self.toolbar_page() else {
             return false;
         };
-        match key {
-            Scancode::Escape => self.panel.clear(),
-            Scancode::H if page == 4 => self.activate("help", canvas),
-            Scancode::Return if !repeat => {
-                let action = match page {
-                    0 => {
-                        if self.focus == 3 {
-                            "frame:none".into()
-                        } else {
-                            format!("display:{}", self.focus.min(2))
-                        }
-                    }
-                    1 => "emulator-settings".into(),
-                    2 => self
-                        .language_choices()
-                        .get(self.focus)
-                        .map(|locale| format!("language:{locale}"))
-                        .unwrap_or_else(|| "close".into()),
-                    _ => "close".into(),
-                };
+        let page0_display_up = page == 0 && event.key == Key::Up && !self.art.nes;
+        let page2_direction = page == 2
+            && matches!(
+                event.key,
+                Key::Left | Key::Right | Key::Up | Key::Down | Key::Next
+            );
+        let page3_scroll_down = page == 3 && event.key == Key::Down;
+        let plan = navigation::transition(
+            navigation::State {
+                focus: self.focus,
+                scroll: self.panel_scroll,
+            },
+            navigation::Context {
+                page,
+                nes: self.art.nes,
+                display_mode: if page0_display_up {
+                    self.display_mode()
+                } else {
+                    0
+                },
+                language_count: if page2_direction {
+                    self.language_choices().len()
+                } else {
+                    0
+                },
+                legal_line_count: if page3_scroll_down {
+                    self.legal_lines().len()
+                } else {
+                    0
+                },
+            },
+            event,
+        );
+        self.focus = plan.state.focus;
+        self.panel_scroll = plan.state.scroll;
+        match plan.effect {
+            None => {}
+            Some(navigation::Effect::DismissPanel) => self.panel.clear(),
+            Some(navigation::Effect::Help) => self.activate("help", canvas),
+            Some(navigation::Effect::ActivateClose) => self.activate("close", canvas),
+            Some(navigation::Effect::FrameNone) => self.activate("frame:none", canvas),
+            Some(navigation::Effect::DisplayMode(mode)) => {
+                self.activate(&format!("display:{mode}"), canvas)
+            }
+            Some(navigation::Effect::EmulatorSettings) => {
+                self.activate("emulator-settings", canvas)
+            }
+            Some(navigation::Effect::ChooseLanguage(index)) => {
+                let action = self
+                    .language_choices()
+                    .get(index)
+                    .map(|locale| format!("language:{locale}"))
+                    .unwrap_or_else(|| "close".into());
                 self.activate(&action, canvas);
             }
-            Scancode::Left | Scancode::Right | Scancode::Up | Scancode::Down | Scancode::Tab => {
-                let backwards = matches!(key, Scancode::Left | Scancode::Up);
-                match page {
-                    0 => {
-                        if key == Scancode::Down && !self.art.nes {
-                            self.focus = 3;
-                        } else if key == Scancode::Up && !self.art.nes {
-                            self.focus = self.display_mode();
-                        } else if self.focus < 3
-                            && matches!(key, Scancode::Left | Scancode::Right | Scancode::Tab)
-                        {
-                            self.focus = (self.focus + if backwards { 2 } else { 1 }) % 3;
-                        }
-                    }
-                    2 => {
-                        let count = self.language_choices().len();
-                        self.focus = language_next(self.focus, count, key);
-                    }
-                    3 => {
-                        if matches!(key, Scancode::Left | Scancode::Right | Scancode::Tab) {
-                            self.focus = 1 - self.focus.min(1);
-                            self.panel_scroll = 0;
-                        } else if key == Scancode::Up {
-                            self.panel_scroll = self.panel_scroll.saturating_sub(1);
-                        } else {
-                            self.panel_scroll = (self.panel_scroll + 1)
-                                .min(self.legal_lines().len().saturating_sub(16));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
         }
         true
-    }
-}
-
-fn language_next(index: usize, count: usize, key: Scancode) -> usize {
-    if count == 0 {
-        return 0;
-    }
-    let index = index.min(count - 1);
-    let next = match key {
-        Scancode::Left if (4..8).contains(&index) => index - 4,
-        Scancode::Right if index < 4 => index + 4,
-        Scancode::Right if index == 8 => 7,
-        Scancode::Up if index == 8 => 3,
-        Scancode::Up if index != 0 && index != 4 => index - 1,
-        Scancode::Down if index == 3 => 8,
-        Scancode::Down if index != 7 && index != 8 => index + 1,
-        Scancode::Tab => (index + 1) % count,
-        _ => index,
-    };
-    if next < count { next } else { index }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn language_grid_arrows_follow_columns() {
-        assert_eq!(language_next(0, 9, Scancode::Right), 4);
-        assert_eq!(language_next(4, 9, Scancode::Left), 0);
-        assert_eq!(language_next(3, 9, Scancode::Down), 8);
-        assert_eq!(language_next(4, 9, Scancode::Up), 4);
-        assert_eq!(language_next(7, 9, Scancode::Down), 7);
-    }
-    #[test]
-    fn legacy_single_language_cannot_escape_grid() {
-        for key in [
-            Scancode::Up,
-            Scancode::Down,
-            Scancode::Left,
-            Scancode::Right,
-            Scancode::Tab,
-        ] {
-            assert_eq!(language_next(0, 1, key), 0);
-        }
     }
 }

@@ -41,9 +41,17 @@ string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," PNG "${PNG}")
 string(APPEND SPRITES "namespace Resource::Sprite::Famicom {\ninline const unsigned char Crosshair[] = {${PNG}};\n}\n")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ares/resource/resource.hpp" "${SPRITES}")
 
+set(NALL_SOURCE "${ARES_ROOT}/nall/nall/nall.cpp")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${ARES_ROOT}/nall/nall/memory.hpp" "${ARES_ROOT}/nall/nall/nall.cpp")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/apple_compat.cmake")
+  clover_prepare_apple_nall("${ARES_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/apple-compat" NALL_SOURCE)
+endif()
+
 add_library(clover_ares STATIC
   ares_core.cpp ares_runtime.cpp ares_c_api.cpp
-  "${ARES_ROOT}/nall/nall/nall.cpp"
+  "${NALL_SOURCE}"
   "${ARES_ROOT}/libco/libco.c"
   "${ARES_ROOT}/ares/ares/memory/fixed-allocator.cpp"
   "${ARES_ROOT}/ares/sfc/sfc.cpp"
@@ -66,6 +74,9 @@ target_include_directories(clover_ares SYSTEM PRIVATE
   "${ARES_ROOT}" "${ARES_ROOT}/ares" "${ARES_ROOT}/nall" "${ARES_ROOT}/thirdparty"
   "${ARES_ROOT}/thirdparty/ymfm/src")
 target_include_directories(clover_ares PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+  target_include_directories(clover_ares BEFORE PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/apple-compat")
+endif()
 target_compile_definitions(clover_ares PRIVATE CORE_SFC CORE_FC PROFILE_PERFORMANCE
   CLOVER_ARES_REVISION="${ARES_REVISION}")
 if(MSVC)

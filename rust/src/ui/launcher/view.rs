@@ -1,8 +1,43 @@
 //! Launcher-only vector chrome and embedded typography; no console assets needed.
+use super::import_worker::CancellationView;
 use super::*;
 use fontdue::{Font, FontSettings, Metrics};
 #[path = "flags.rs"]
 mod flags;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrimaryButton {
+    label: &'static str,
+    enabled: bool,
+}
+
+fn primary_button(
+    busy: bool,
+    cancel: CancellationView,
+    entry_exists: bool,
+    ready: bool,
+) -> PrimaryButton {
+    if busy {
+        let (label, enabled) = match cancel {
+            CancellationView::Available => ("Cancel import", true),
+            CancellationView::Requested => ("Cancelling…", false),
+            CancellationView::Finishing => ("Finishing import…", false),
+            CancellationView::Unavailable => ("Preparing your Classic…", false),
+        };
+        PrimaryButton { label, enabled }
+    } else {
+        PrimaryButton {
+            label: if !entry_exists {
+                "Import an image"
+            } else if ready {
+                "Launch Classic Menu"
+            } else {
+                "Import & launch"
+            },
+            enabled: true,
+        }
+    }
+}
 
 pub const WIDTH: u32 = 1200;
 pub const HEIGHT: u32 = 760;
@@ -187,6 +222,7 @@ impl View {
         entries: &[&Entry],
         selected: usize,
         busy: bool,
+        cancel: CancellationView,
         status: &str,
         error: bool,
         hover: Option<(f32, f32)>,
@@ -600,9 +636,10 @@ impl View {
             286.0,
         )?;
 
-        let primary_hot =
-            hover.is_some_and(|(x, y)| point_inside(x, y, BUTTONS[0])) || focus == Some(0);
-        let enabled = !busy;
+        let button = primary_button(busy, cancel, entry.is_some(), ready);
+        let primary_hot = button.enabled
+            && (hover.is_some_and(|(x, y)| point_inside(x, y, BUTTONS[0])) || focus == Some(0));
+        let enabled = button.enabled;
         panel(
             canvas,
             BUTTONS[0],
@@ -617,15 +654,7 @@ impl View {
         );
         self.text(
             canvas,
-            if busy {
-                "Preparing your Classic…"
-            } else if entry.is_none() {
-                "Import an image"
-            } else if ready {
-                "Launch Classic Menu"
-            } else {
-                "Import & launch"
-            },
+            button.label,
             890.0,
             666.0,
             21,
@@ -689,16 +718,38 @@ impl View {
                 ACCENT,
             );
         }
-        self.text(
-            canvas,
-            if controller_connected { "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen" } else { "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen" },
-            272.0,
-            728.0,
-            13,
-            false,
-            MUTED,
-            880.0,
-        )?;
+        let footer = if !busy {
+            if controller_connected {
+                "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen"
+            } else {
+                "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen"
+            }
+        } else {
+            match (cancel, controller_connected) {
+                (CancellationView::Available, true) => {
+                    "East  Cancel import    Waiting for a safe stopping point    F11  Full screen"
+                }
+                (CancellationView::Available, false) => {
+                    "Escape  Cancel import    Waiting for a safe stopping point    F11  Full screen"
+                }
+                (CancellationView::Requested, true) => {
+                    "Cancellation requested    Waiting for a safe stopping point    F11  Full screen"
+                }
+                (CancellationView::Requested, false) => {
+                    "Cancellation requested    Waiting for a safe stopping point    F11  Full screen"
+                }
+                (CancellationView::Finishing, _) => {
+                    "Finishing import    Cancellation is too late    F11  Full screen"
+                }
+                (CancellationView::Unavailable, true) => {
+                    "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen"
+                }
+                (CancellationView::Unavailable, false) => {
+                    "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen"
+                }
+            }
+        };
+        self.text(canvas, footer, 272.0, 728.0, 13, false, MUTED, 880.0)?;
         Ok(())
     }
 }
@@ -1034,6 +1085,68 @@ fn snes_controller(canvas: &mut Canvas<Window>, x: f32, y: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_button_cancellation_states_match_enabled_and_label_contract() {
+        assert_eq!(
+            primary_button(true, CancellationView::Available, true, false),
+            PrimaryButton {
+                label: "Cancel import",
+                enabled: true
+            }
+        );
+        assert_eq!(
+            primary_button(true, CancellationView::Requested, true, false),
+            PrimaryButton {
+                label: "Cancelling…",
+                enabled: false
+            }
+        );
+        assert_eq!(
+            primary_button(true, CancellationView::Finishing, true, false),
+            PrimaryButton {
+                label: "Finishing import…",
+                enabled: false
+            }
+        );
+        assert_eq!(
+            primary_button(true, CancellationView::Unavailable, true, false),
+            PrimaryButton {
+                label: "Preparing your Classic…",
+                enabled: false
+            }
+        );
+        assert_eq!(
+            primary_button(false, CancellationView::Unavailable, false, false),
+            PrimaryButton {
+                label: "Import an image",
+                enabled: true
+            }
+        );
+        assert_eq!(
+            primary_button(false, CancellationView::Unavailable, true, true),
+            PrimaryButton {
+                label: "Launch Classic Menu",
+                enabled: true
+            }
+        );
+    }
+
+    #[test]
+    fn busy_cancel_hit_target_is_the_existing_primary_button() {
+        let rect = BUTTONS[0];
+        assert!(point_inside(
+            rect.x + rect.w / 2.0,
+            rect.y + rect.h / 2.0,
+            BUTTONS[0]
+        ));
+        assert!(!point_inside(
+            rect.x + rect.w + 1.0,
+            rect.y + rect.h / 2.0,
+            BUTTONS[0]
+        ));
+    }
+
     #[test]
     fn friendly_image_identity() {
         let (title, region, version) = identity(&Entry::Image(PathBuf::from(

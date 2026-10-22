@@ -48,6 +48,55 @@ jobs:
             dist/rust-desktop/*.zip
             dist/rust-desktop/*.tar.gz
           if-no-files-found: error
+  apple-core-target-checks:
+    name: ${{ matrix.platform }} core compile/link check (not an app test)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS simulator
+            system: iOS
+            sdk: iphonesimulator
+            macho_platform: IOSSIMULATOR
+          - platform: tvOS simulator
+            system: tvOS
+            sdk: appletvsimulator
+            macho_platform: TVOSSIMULATOR
+          - platform: iOS device
+            system: iOS
+            sdk: iphoneos
+            macho_platform: IOS
+          - platform: tvOS device
+            system: tvOS
+            sdk: appletvos
+            macho_platform: TVOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install Ninja
+        run: python -m pip install ninja
+      - name: Fetch pinned sources
+        run: python scripts/bootstrap-portable.py
+      - name: Test build-tree compatibility generation
+        run: python scripts/test-apple-compat.py
+      - name: Configure Apple core target
+        run: >-
+          cmake -S portable/core -B .build/apple-core -G Ninja
+          -DCMAKE_SYSTEM_NAME=${{ matrix.system }}
+          -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }}
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+          -DCLOVER_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Compile and link generated-ROM smoke executables
+        run: cmake --build .build/apple-core --parallel 3
+      - name: Verify binary platform
+        run: |
+          for name in clover_ares_smoke clover_ares_nes_smoke; do
+            xcrun vtool -show-build ".build/apple-core/$name.app/$name" | grep -E 'platform +${{ matrix.macho_platform }}$'
+          done
   portable-rust-target-checks:
     name: ${{ matrix.platform }} portable Rust library check (not an app build)
     strategy:

@@ -3,22 +3,17 @@
 use super::*;
 use std::time::Duration;
 
-pub(super) const AUDIO_BUFFER_MS: usize = 60;
-pub(super) const MAX_AUDIO_CATCHUP_FRAMES: usize = 6;
-
-pub(super) fn audio_target_bytes(rate: u32) -> usize {
-    rate as usize * 2 * std::mem::size_of::<f32>() * AUDIO_BUFFER_MS / 1000
-}
+pub(super) use crate::frontend::timing::{MAX_AUDIO_CATCHUP_FRAMES, audio_target_bytes};
 
 pub(super) fn silent_frames_due(deadline: &mut Instant, now: Instant) -> usize {
-    let mut frames = 0;
-    while *deadline <= now && frames < MAX_AUDIO_CATCHUP_FRAMES {
-        *deadline += Duration::from_nanos(16_666_667);
-        frames += 1;
+    if now < *deadline {
+        return 0;
     }
-    if frames == MAX_AUDIO_CATCHUP_FRAMES && *deadline < now {
-        *deadline = now;
-    }
+    let origin = *deadline;
+    let elapsed = now.duration_since(origin);
+    let mut relative_deadline = Duration::ZERO;
+    let frames = crate::frontend::timing::silent_frames_due(&mut relative_deadline, elapsed);
+    *deadline = origin + relative_deadline;
     frames
 }
 
@@ -74,23 +69,23 @@ mod tests {
         );
     }
     #[test]
-    fn stereo_float_buffer_is_rate_based_not_display_frame_based() {
-        assert_eq!(audio_target_bytes(48_000), 23_040);
-        assert_eq!(audio_target_bytes(44_100), 21_168);
-        assert!(MAX_AUDIO_CATCHUP_FRAMES * 798 * 8 > audio_target_bytes(48_000));
-    }
-    #[test]
-    fn missing_audio_device_does_not_double_speed_on_high_refresh_displays() {
+    fn adapter_matches_original_instant_algorithm_trace() {
         let start = Instant::now();
-        let mut deadline = start;
-        let count: usize = (0..120)
-            .map(|tick| {
-                silent_frames_due(
-                    &mut deadline,
-                    start + Duration::from_nanos(tick * 1_000_000_000 / 120),
-                )
-            })
-            .sum();
-        assert_eq!(count, 60);
+        let samples = [0, 16_666_667, 16_666_668, 50_000_001, 2_000_000_000];
+        let mut adapted = start;
+        let mut original = start;
+        for nanos in samples {
+            let now = start + Duration::from_nanos(nanos);
+            let a = silent_frames_due(&mut adapted, now);
+            let mut b = 0;
+            while original <= now && b < MAX_AUDIO_CATCHUP_FRAMES {
+                original += Duration::from_nanos(16_666_667);
+                b += 1;
+            }
+            if b == MAX_AUDIO_CATCHUP_FRAMES && original < now {
+                original = now;
+            }
+            assert_eq!((a, adapted), (b, original));
+        }
     }
 }

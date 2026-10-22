@@ -2,7 +2,7 @@
 
 [![Build and test](https://github.com/bbsan2k/nclassicloader/actions/workflows/portable.yml/badge.svg?branch=main)](https://github.com/bbsan2k/nclassicloader/actions/workflows/portable.yml)
 [![Desktop build targets](https://img.shields.io/badge/build_targets-macOS%20%7C%20Windows%20%7C%20Linux-2088ff)](docs/platform-builds.md)
-[![iOS/tvOS library checks only](https://img.shields.io/badge/iOS%20%2F%20tvOS-library_checks_only-8e8e93?logo=apple)](docs/platform-builds.md)
+[![iOS/tvOS library and core checks only](https://img.shields.io/badge/iOS%20%2F%20tvOS-library_%2B_core_checks_only-8e8e93?logo=apple)](docs/platform-builds.md)
 [![WebAssembly library check only](https://img.shields.io/badge/WebAssembly-library_check_only-654ff0?logo=webassembly&logoColor=white)](docs/platform-builds.md)
 [![GitHub issues](https://img.shields.io/github/issues/bbsan2k/nclassicloader)](https://github.com/bbsan2k/nclassicloader/issues)
 [![GitHub stars](https://img.shields.io/github/stars/bbsan2k/nclassicloader?style=flat)](https://github.com/bbsan2k/nclassicloader/stargazers)
@@ -175,6 +175,17 @@ and physical-device behavior remain unverified.
 
 `.build/`, `dist/`, `analysis/`, local console images, caches, and saves are
 deliberately excluded from Git. Do not publish generated console-content artifacts.
+
+### Frontend portability work
+
+The [architecture split](docs/frontend-architecture.md) and
+[small-agent task queue](docs/frontend-tasks.md) separate shared behavior from
+SDL rendering, platform services and emulation ownership. Controller input,
+launcher filtering/selection, stick/repeat, suspend navigation, gameplay masks,
+language navigation and timing policies now run without SDL. The remaining
+work is staged, not a claim of working iOS, tvOS or browser applications. Luna
+handles bounded implementation tasks; Sol reviews high-risk contracts and
+verifies integration.
 
 ## Licensing and content
 

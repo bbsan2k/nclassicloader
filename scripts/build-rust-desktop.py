@@ -39,7 +39,8 @@ def main():
          "--release", "--features", "native-app"], env=app_env)
 
     smoke_env = app_env.copy()
-    smoke_env.update({"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy"})
+    smoke_env.update({"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
+                      "CLOVER_RUST_WINDOW_FRAMES": "2"})
     executable = ROOT / "rust/target/release" / ("clover-rust.exe" if sys.platform == "win32" else "clover-rust")
     run([executable, "window-smoke"], env=smoke_env)
     run([executable, "run", "--launcher-preview", BUILD / "launcher-smoke.png",

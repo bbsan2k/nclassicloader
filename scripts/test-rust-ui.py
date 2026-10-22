@@ -28,6 +28,28 @@ def main():
         for panel in ("toolbar:0", "settings", "emulator-settings", "help", "resume", "profiles", "toolbar:2", "toolbar:3", "toolbar:4"):
             subprocess.run(base + ["--preview-panel", panel, "--screenshot",
                                   str(args.output / f"panel-{panel.replace(':', '-')}.png")], env=env, check=True)
+        for state in ("running", "requested", "finishing"):
+            subprocess.run(base + ["--preview-panel", f"import-{state}", "--screenshot",
+                                  str(args.output / f"panel-import-{state}.png")], env=env, check=True)
+        # The notice footer is rendered by the same panel code as a live import.
+        # Compare button crops (without OCR) to ensure the enabled and two
+        # disabled states remain visibly distinct.
+        footer_crops = {}
+        for state in ("running", "requested", "finishing"):
+            image = args.output / f"panel-import-{state}.png"
+            crop = data / f"import-footer-{state}.png"
+            subprocess.run(["magick", str(image), "-crop", "220x48+530+543", "+repage", str(crop)], check=True)
+            footer_crops[state] = crop
+        for left, right in (("running", "requested"), ("running", "finishing"), ("requested", "finishing")):
+            result = subprocess.run(["compare", "-metric", "AE", str(footer_crops[left]),
+                                     str(footer_crops[right]), "null:"], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            try:
+                metric = float((result.stderr or result.stdout).strip().split(maxsplit=1)[0])
+            except (IndexError, ValueError):
+                metric = 0.0
+            if result.returncode not in (0, 1) or metric == 0:
+                raise RuntimeError(f"Import notice footer previews are not distinct: {left} vs {right}")
         subprocess.run([str(args.executable.resolve()), "run", "--data-dir", str(data),
                         "--launcher-preview", str(args.output / "launcher.png")], env=env, check=True)
         for system in ("nes", "famicom", "snes"):
@@ -61,6 +83,39 @@ def main():
             subprocess.run([str(args.executable.resolve()), "run", "--data-dir", str(data),
                             "--launcher-preview", str(args.output / f"launcher-{state}.png")],
                            env=dict(env, CLOVER_LAUNCHER_PREVIEW_STATE=state), check=True)
+        for cancel in ("available", "requested", "finishing"):
+            subprocess.run([str(args.executable.resolve()), "run", "--data-dir", str(data),
+                            "--launcher-preview", str(args.output / f"launcher-busy-{cancel}.png")],
+                           env=dict(env, CLOVER_LAUNCHER_PREVIEW_STATE="busy",
+                                    CLOVER_LAUNCHER_PREVIEW_CANCEL=cancel), check=True)
+        # Sample the button fill away from the label; enabled uses ACCENT while
+        # requested/finishing use the disabled fill. The three full button crops
+        # must also remain visually distinct without relying on OCR.
+        button_pixels = {}
+        for cancel in ("available", "requested", "finishing"):
+            image = args.output / f"launcher-busy-{cancel}.png"
+            subprocess.run(["magick", str(image), "-crop", "294x58+866+650", "+repage",
+                            str(data / f"button-{cancel}.png")], check=True)
+            button_pixels[cancel] = subprocess.check_output(
+                ["magick", str(image), "-crop", "1x1+870+678", "+repage", "-depth", "8", "RGB:-"]
+            )
+        if button_pixels["available"] != bytes([94, 234, 210]):
+            raise RuntimeError(f"Available cancel button fill changed: {list(button_pixels['available'])}")
+        disabled = bytes([43, 57, 68])
+        if button_pixels["requested"] != disabled or button_pixels["finishing"] != disabled:
+            raise RuntimeError("Requested/finishing cancel button is not rendered disabled")
+        for left, right in (("available", "requested"), ("available", "finishing"),
+                            ("requested", "finishing")):
+            result = subprocess.run(["compare", "-metric", "AE", str(data / f"button-{left}.png"),
+                                     str(data / f"button-{right}.png"), "null:"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            metric_text = (result.stderr or result.stdout).strip()
+            try:
+                metric = float(metric_text.split(maxsplit=1)[0])
+            except (IndexError, ValueError):
+                metric = 0.0
+            if result.returncode not in (0, 1) or metric == 0:
+                raise RuntimeError(f"Cancel button snapshots are not distinct: {left} vs {right}")
         # Options bubble uses the stock 144px body. Compare just its white border,
         # not the moving wallpaper visible through transparent pixels around it.
         for name, x, flop in [("left", 460, []), ("right", 616, ["-flop"])]:

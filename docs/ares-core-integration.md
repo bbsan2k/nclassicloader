@@ -140,6 +140,10 @@ states; as with the upstream emulator, only load trusted state files.
 
 ## Standalone smoke tests
 
+For the separate iOS/tvOS simulator **compile/link-only** checks and build-tree
+compatibility adaptations, see [feasibility evidence](frontend-feasibility.md).
+They do not establish simulator/device runtime or frontend app support.
+
 ```sh
 python3 scripts/bootstrap-portable.py
 cmake -S portable/core -B .build/ares-bridge -DCMAKE_BUILD_TYPE=Release -DCLOVER_BUILD_TESTS=ON

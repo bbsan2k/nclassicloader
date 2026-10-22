@@ -42,12 +42,19 @@ fn u64le(b: &[u8], p: usize) -> u64 {
     u64::from_le_bytes(b[p..p + 8].try_into().expect("validated u64"))
 }
 
-struct Source {
-    file: File,
+struct Source<R: Read + Seek> {
+    reader: R,
     size: u64,
 }
 
-impl Source {
+impl<R: Read + Seek> Source<R> {
+    fn from_reader(reader: R, size: u64) -> ReadResult<Self> {
+        require(size <= ARCHIVE_LIMIT, "archive exceeds 1 GiB limit")?;
+        Ok(Self { reader, size })
+    }
+}
+
+impl Source<File> {
     fn open(path: &Path) -> ReadResult<Self> {
         let file =
             File::open(path).map_err(|e| fail(format!("cannot open {}: {e}", path.display())))?;
@@ -55,20 +62,21 @@ impl Source {
             .metadata()
             .map_err(|e| fail(format!("cannot determine image size: {e}")))?
             .len();
-        require(size <= ARCHIVE_LIMIT, "archive exceeds 1 GiB limit")?;
-        Ok(Self { file, size })
+        Self::from_reader(file, size)
     }
+}
 
+impl<R: Read + Seek> Source<R> {
     fn read(&mut self, offset: u64, length: usize) -> ReadResult<Vec<u8>> {
         require(
             offset <= self.size && (length as u64) <= self.size - offset,
             "read outside image",
         )?;
-        self.file
+        self.reader
             .seek(SeekFrom::Start(offset))
             .map_err(|e| fail(format!("image seek failed: {e}")))?;
         let mut bytes = vec![0; length];
-        self.file
+        self.reader
             .read_exact(&mut bytes)
             .map_err(|e| fail(format!("truncated or unreadable image: {e}")))?;
         Ok(bytes)
@@ -217,8 +225,8 @@ struct CursorRef {
     offset: usize,
 }
 
-struct Squash<'a> {
-    source: &'a mut Source,
+struct Squash<'a, R: Read + Seek> {
+    source: &'a mut Source<R>,
     out: Collector,
     used: u64,
     inode_table: u64,
@@ -232,7 +240,7 @@ struct Squash<'a> {
     visited_directories: BTreeSet<u64>,
 }
 
-impl<'a> Squash<'a> {
+impl<'a, R: Read + Seek> Squash<'a, R> {
     fn read(&mut self, offset: u64, length: usize) -> ReadResult<Vec<u8>> {
         require(
             offset <= self.used && (length as u64) <= self.used - offset,
@@ -625,12 +633,12 @@ fn field(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-fn tar(mut source: Source) -> ReadResult<Files> {
+fn tar<R: Read + Seek>(mut source: Source<R>) -> ReadResult<Files> {
     source
-        .file
+        .reader
         .seek(SeekFrom::Start(0))
         .map_err(|e| fail(format!("image seek failed: {e}")))?;
-    let reader = BufReader::new(source.file);
+    let reader = BufReader::new(source.reader.take(source.size));
     let mut gz = Gzip {
         decoder: GzDecoder::new(reader),
         expanded: 0,
@@ -708,7 +716,7 @@ fn tar(mut source: Source) -> ReadResult<Files> {
     }
 }
 
-fn squash(source: &mut Source) -> ReadResult<Files> {
+fn squash<R: Read + Seek>(source: &mut Source<R>) -> ReadResult<Files> {
     let superblock = source.read(0, 96)?;
     let fs = Squash {
         source,
@@ -729,7 +737,20 @@ fn squash(source: &mut Source) -> ReadResult<Files> {
 
 /// Read selected files from a stock SquashFS v4 or gzip/ustar image.
 pub fn read_image(path: &Path) -> ReadResult<Files> {
-    let mut source = Source::open(path)?;
+    read_source(Source::open(path)?)
+}
+
+/// Read selected files from a stock image in a caller-provided stable extent.
+///
+/// `size` is the snapshot extent supplied by the host. The caller owns the
+/// guarantees that the reader remains immutable or snapshot-stable for the
+/// duration of parsing; this function does not verify content hashes or
+/// stability and does not provide asynchronous or browser-storage access.
+pub fn read_image_from<R: Read + Seek>(reader: R, size: u64) -> ReadResult<Files> {
+    read_source(Source::from_reader(reader, size)?)
+}
+
+fn read_source<R: Read + Seek>(mut source: Source<R>) -> ReadResult<Files> {
     require(source.size >= 8, "image is too short")?;
     let magic = source.read(0, 8)?;
     if &magic == b"ANDROID!" {
@@ -751,6 +772,352 @@ pub fn read_image(path: &Path) -> ReadResult<Files> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    #[derive(Default)]
+    struct IoCounts {
+        reads: Cell<usize>,
+        seeks: Cell<usize>,
+        bytes_read: Cell<u64>,
+    }
+
+    struct TestReader {
+        bytes: Cursor<Vec<u8>>,
+        counts: Rc<IoCounts>,
+        fail_seek: bool,
+        fail_read: bool,
+        max_read: usize,
+    }
+
+    impl Read for TestReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.counts.reads.set(self.counts.reads.get() + 1);
+            if self.fail_read {
+                return Err(std::io::Error::other("injected read failure"));
+            }
+            let length = output.len().min(self.max_read);
+            let read = self.bytes.read(&mut output[..length])?;
+            self.counts
+                .bytes_read
+                .set(self.counts.bytes_read.get().max(self.bytes.position()));
+            Ok(read)
+        }
+    }
+
+    impl Seek for TestReader {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.counts.seeks.set(self.counts.seeks.get() + 1);
+            if self.fail_seek {
+                return Err(std::io::Error::other("injected seek failure"));
+            }
+            self.bytes.seek(position)
+        }
+    }
+
+    fn test_source(bytes: &[u8], declared_size: u64) -> (Source<TestReader>, Rc<IoCounts>) {
+        let counts = Rc::new(IoCounts::default());
+        let reader = TestReader {
+            bytes: Cursor::new(bytes.to_vec()),
+            counts: counts.clone(),
+            fail_seek: false,
+            fail_read: false,
+            max_read: usize::MAX,
+        };
+        (Source::from_reader(reader, declared_size).unwrap(), counts)
+    }
+
+    #[test]
+    fn injected_source_reads_absolute_ranges_and_zero_length_at_eof() {
+        let (mut source, counts) = test_source(b"abcdef", 6);
+        source.reader.seek(SeekFrom::Start(4)).unwrap();
+        assert_eq!(source.read(1, 3).unwrap(), b"bcd");
+        assert_eq!(source.read(6, 0).unwrap(), b"");
+        assert_eq!(counts.seeks.get(), 3);
+        assert_eq!(counts.reads.get(), 1);
+    }
+
+    #[test]
+    fn invalid_ranges_reject_before_io_and_allocation() {
+        let (mut source, counts) = test_source(b"abc", 3);
+        assert!(
+            source
+                .read(4, 0)
+                .unwrap_err()
+                .contains("read outside image")
+        );
+        assert!(
+            source
+                .read(0, usize::MAX)
+                .unwrap_err()
+                .contains("read outside image")
+        );
+        assert_eq!(counts.seeks.get(), 0);
+        assert_eq!(counts.reads.get(), 0);
+    }
+
+    #[test]
+    fn declared_size_limit_is_checked_before_io() {
+        let counts = Rc::new(IoCounts::default());
+        let reader = TestReader {
+            bytes: Cursor::new(Vec::new()),
+            counts: counts.clone(),
+            fail_seek: false,
+            fail_read: false,
+            max_read: usize::MAX,
+        };
+        assert!(
+            Source::from_reader(reader, ARCHIVE_LIMIT + 1)
+                .err()
+                .unwrap()
+                .contains("archive exceeds 1 GiB limit")
+        );
+        assert_eq!(counts.seeks.get(), 0);
+        assert_eq!(counts.reads.get(), 0);
+
+        let (mut exact, exact_counts) = test_source(b"", ARCHIVE_LIMIT);
+        assert_eq!(exact.read(ARCHIVE_LIMIT, 0).unwrap(), b"");
+        assert_eq!(exact_counts.reads.get(), 0);
+    }
+
+    #[test]
+    fn declared_length_truncation_seek_and_read_errors_keep_prefixes() {
+        let (mut truncated, _) = test_source(b"abc", 5);
+        assert!(
+            truncated
+                .read(0, 5)
+                .unwrap_err()
+                .starts_with("Image reader: truncated or unreadable image:")
+        );
+
+        let (mut seek_failure, _) = test_source(b"abc", 3);
+        seek_failure.reader.fail_seek = true;
+        assert!(
+            seek_failure
+                .read(0, 1)
+                .unwrap_err()
+                .starts_with("Image reader: image seek failed:")
+        );
+
+        let (mut read_failure, _) = test_source(b"abc", 3);
+        read_failure.reader.fail_read = true;
+        assert!(
+            read_failure
+                .read(0, 1)
+                .unwrap_err()
+                .starts_with("Image reader: truncated or unreadable image:")
+        );
+    }
+
+    #[test]
+    fn read_exact_recovers_from_short_reads() {
+        let (mut source, _) = test_source(b"short reads", 11);
+        source.reader.max_read = 2;
+        assert_eq!(source.read(0, 11).unwrap(), b"short reads");
+    }
+
+    #[test]
+    fn public_reader_entry_matches_file_parser_and_stops_at_declared_extent() {
+        let image = tar_gz(
+            &[
+                ("usr/share/games/selected.desktop", b"selected"),
+                ("usr/bin/ignored", b"ignored"),
+            ],
+            &[],
+        );
+        let path = write_image(&image);
+        let from_file = read_image(&path).unwrap();
+        fs::remove_file(path).unwrap();
+
+        let mut bytes = image.clone();
+        bytes.extend_from_slice(b"ANDROID!outside-snapshot");
+        let counts = Rc::new(IoCounts::default());
+        let reader = TestReader {
+            bytes: Cursor::new(bytes),
+            counts: counts.clone(),
+            fail_seek: false,
+            fail_read: false,
+            max_read: usize::MAX,
+        };
+        let mut reader = reader;
+        reader.bytes.set_position(5);
+        let from_reader = read_image_from(reader, image.len() as u64).unwrap();
+        assert_eq!(from_reader, from_file);
+        assert!(counts.bytes_read.get() <= image.len() as u64);
+
+        let truncated = read_image_from(Cursor::new(&image[..]), image.len() as u64 - 1);
+        assert!(truncated.is_err());
+    }
+
+    #[test]
+    fn public_reader_entry_checks_cap_before_io_and_preserves_dispatch_errors() {
+        let counts = Rc::new(IoCounts::default());
+        let reader = TestReader {
+            bytes: Cursor::new(Vec::new()),
+            counts: counts.clone(),
+            fail_seek: false,
+            fail_read: false,
+            max_read: usize::MAX,
+        };
+        assert!(
+            read_image_from(reader, ARCHIVE_LIMIT + 1)
+                .unwrap_err()
+                .contains("Image reader: archive exceeds 1 GiB limit")
+        );
+        assert_eq!(counts.reads.get(), 0);
+        assert_eq!(counts.seeks.get(), 0);
+
+        let boot_error = read_image_from(Cursor::new(b"ANDROID!payload"), 15).unwrap_err();
+        assert!(boot_error.contains("Android boot .img contains the kernel/boot ramdisk"));
+        assert_eq!(
+            read_image_from(Cursor::new(b"unsupported"), 11).unwrap_err(),
+            fail("unsupported image; select a SquashFS .hsqs or gzip .tar.gz root filesystem")
+        );
+    }
+
+    #[test]
+    fn path_and_reader_entrypoints_match_across_synthetic_input_matrix() {
+        let valid = tar_gz(
+            &[
+                ("usr/share/games/good.desktop", b"chosen"),
+                ("usr/bin/ignored", b"not chosen"),
+            ],
+            &[],
+        );
+        let mut bad_checksum = tar_header("usr/share/games/a.desktop", b"x");
+        bad_checksum[0] ^= 1;
+        let mut missing_second = tar_header("", b"");
+        missing_second.fill(1);
+        let mut missing_end_raw = vec![0; 512];
+        missing_end_raw.extend_from_slice(&missing_second);
+        let no_second_marker = gzip(&missing_end_raw);
+        let mut trailing_raw = vec![0; 1024];
+        trailing_raw.push(1);
+        let mut truncated_gzip = valid.clone();
+        truncated_gzip.truncate(truncated_gzip.len() - 4);
+        let mut concatenated = valid.clone();
+        concatenated.extend(gzip(b"second gzip member"));
+        let mut short_squash = 0x7371_7368u32.to_le_bytes().to_vec();
+        short_squash.extend_from_slice(&[0; 4]);
+
+        let mut oversized_member =
+            tar_header_size("usr/share/games/huge.desktop", FILE_LIMIT + 1, b'0').to_vec();
+        oversized_member.extend([0; 1024]);
+
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("valid mixed members", valid),
+            ("parent traversal", tar_gz(&[("../escape", b"x")], &[])),
+            ("absolute path", tar_gz(&[("/absolute.desktop", b"x")], &[])),
+            (
+                "backslash path",
+                tar_gz(&[("bad\\name.desktop", b"x")], &[]),
+            ),
+            ("colon path", tar_gz(&[("bad:name.desktop", b"x")], &[])),
+            (
+                "control path",
+                tar_gz(&[("bad\x01name.desktop", b"x")], &[]),
+            ),
+            (
+                "duplicate selected path",
+                tar_gz(
+                    &[
+                        ("usr/share/games/same.desktop", b"a"),
+                        ("usr/share/games/same.desktop", b"b"),
+                    ],
+                    &[],
+                ),
+            ),
+            (
+                "case-colliding selected path",
+                tar_gz(
+                    &[
+                        ("usr/share/games/same.desktop", b"a"),
+                        ("usr/share/games/SAME.desktop", b"b"),
+                    ],
+                    &[],
+                ),
+            ),
+            (
+                "bad checksum",
+                gzip(&[bad_checksum.as_slice(), &[0; 1024]].concat()),
+            ),
+            ("missing second end marker", no_second_marker),
+            ("nonzero trailing tar data", gzip(&trailing_raw)),
+            ("concatenated gzip", concatenated),
+            ("truncated gzip", truncated_gzip),
+            ("boot image", b"ANDROID!payload".to_vec()),
+            ("unsupported", b"unsupported".to_vec()),
+            ("too short", b"short".to_vec()),
+            ("short SquashFS superblock", short_squash),
+            ("oversized tar member", gzip(&oversized_member)),
+        ];
+
+        for (name, image) in cases {
+            let path = TempImage::new(&image);
+            let from_path = read_image(&path.0);
+            let from_reader = read_image_from(Cursor::new(&image[..]), image.len() as u64);
+            assert_eq!(from_reader, from_path, "entrypoint mismatch for {name}");
+            if name == "valid mixed members" {
+                let files = from_reader.unwrap();
+                assert_eq!(files.len(), 1);
+                assert_eq!(files["usr/share/games/good.desktop"], b"chosen");
+                continue;
+            }
+            let expected = match name {
+                "parent traversal" => "parent traversal",
+                "absolute path" => "absolute archive member path",
+                "backslash path" | "colon path" | "control path" => "unsafe archive member path",
+                "duplicate selected path" | "case-colliding selected path" => {
+                    "duplicate or case-colliding"
+                }
+                "bad checksum" => "invalid tar header checksum",
+                "missing second end marker" => "missing second tar end marker",
+                "nonzero trailing tar data" => "nonzero data after tar end markers",
+                "concatenated gzip" => "trailing data or concatenated gzip streams",
+                "truncated gzip" => "Image reader:",
+                "boot image" => "Android boot .img contains",
+                "unsupported" => "unsupported image",
+                "too short" => "image is too short",
+                "short SquashFS superblock" => "read outside image",
+                "oversized tar member" => "tar member exceeds 64 MiB limit",
+                _ => unreachable!("uncharacterized case: {name}"),
+            };
+            let error = from_reader.unwrap_err();
+            assert!(
+                error.contains(expected),
+                "wrong rejection for {name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn zlib_block_failures_and_disabled_xz_error_remain_explicit() {
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&vec![7; 4096]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(
+            decode_block(&compressed, 32, 1)
+                .unwrap_err()
+                .contains("oversized SquashFS zlib block")
+        );
+        assert!(
+            decode_block(&compressed[..compressed.len() - 1], 4096, 1)
+                .unwrap_err()
+                .starts_with("Image reader: invalid zlib block:")
+        );
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        assert!(
+            decode_block(&trailing, 4096, 1)
+                .unwrap_err()
+                .contains("trailing data in SquashFS zlib block")
+        );
+        #[cfg(not(feature = "xz"))]
+        assert!(
+            decode_block(&[], 32, 4)
+                .unwrap_err()
+                .contains("XZ-compressed filesystems require the xz feature")
+        );
+    }
 
     #[cfg(feature = "xz")]
     #[test]
@@ -782,16 +1149,20 @@ mod tests {
     }
 
     fn tar_header(name: &str, bytes: &[u8]) -> [u8; 512] {
+        tar_header_size(name, bytes.len() as u64, b'0')
+    }
+
+    fn tar_header_size(name: &str, size: u64, kind: u8) -> [u8; 512] {
         let mut h = [0u8; 512];
         h[..name.len()].copy_from_slice(name.as_bytes());
         h[100..108].copy_from_slice(b"0000644\0");
         h[108..116].copy_from_slice(b"0000000\0");
         h[116..124].copy_from_slice(b"0000000\0");
-        let size = format!("{:011o}\0", bytes.len());
+        let size = format!("{size:011o}\0");
         h[124..136].copy_from_slice(size.as_bytes());
         h[136..148].copy_from_slice(b"00000000000\0");
         h[148..156].fill(b' ');
-        h[156] = b'0';
+        h[156] = kind;
         h[257..263].copy_from_slice(b"ustar\0");
         h[263..265].copy_from_slice(b"00");
         let checksum: u64 = h.iter().map(|&b| u64::from(b)).sum();
@@ -809,9 +1180,29 @@ mod tests {
         }
         raw.extend([0; 1024]);
         raw.extend_from_slice(trailing);
+        gzip(&raw)
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&raw).unwrap();
+        encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
+    }
+
+    struct TempImage(std::path::PathBuf);
+
+    impl TempImage {
+        fn new(contents: &[u8]) -> Self {
+            let path = temporary("image-matrix");
+            fs::write(&path, contents).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempImage {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
     }
 
     fn write_image(contents: &[u8]) -> std::path::PathBuf {

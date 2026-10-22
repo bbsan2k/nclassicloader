@@ -1,21 +1,28 @@
 //! Rust SDL3 frontend. Clover's packed atlas, bitmap fonts, imported covers,
 //! regional layout, carousel controls, and ares session all stay on this thread.
 
+mod app_import;
 mod checks;
 mod controls;
+mod dialog_requests;
 mod gamepad;
+mod host;
 mod icon;
+mod input;
 mod launcher;
+mod presentation;
 mod suspend;
 mod timing;
 mod toolbar;
 
+use crate::frontend::catalog::{self, Game, safe_id};
+use crate::frontend::menu_input::Key;
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
-    io::BufReader,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     time::Instant,
@@ -24,7 +31,7 @@ use std::{
 use sdl3::{
     GamepadSubsystem,
     audio::{AudioFormat, AudioSpec, AudioSpecWAV, AudioStreamOwner},
-    dialog::{self, DialogError, DialogFileFilter},
+    dialog::{self, DialogFileFilter},
     event::Event,
     gamepad::{Button as PadButton, Gamepad},
     keyboard::Scancode,
@@ -42,56 +49,7 @@ unsafe extern "C" {
 
 const STAGE_W: f32 = 1280.0;
 
-#[derive(Clone)]
-struct Game {
-    id: String,
-    title: String,
-    sort_title: String,
-    publisher: String,
-    release: String,
-    copyright: String,
-    rom: String,
-    import_error: String,
-    players: u32,
-    simultaneous: bool,
-    firmware_required: Vec<String>,
-}
-
-#[derive(Clone, Copy)]
-struct Glyph {
-    source: FRect,
-    x: f32,
-    y: f32,
-    advance: f32,
-}
-
-struct Font {
-    size: f32,
-    line: f32,
-    baseline: f32,
-    glyphs: BTreeMap<char, Glyph>,
-    kernings: BTreeMap<(char, char), f32>,
-}
-
-#[derive(Clone)]
-struct PlacedGlyph {
-    font: String,
-    source: FRect,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-struct TextLayout {
-    glyphs: Vec<PlacedGlyph>,
-    advance: f32,
-    line: f32,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-}
+use crate::frontend::font::{Font, TextLayout};
 
 struct UiAssets {
     nes: bool,
@@ -113,138 +71,61 @@ struct UiAssets {
 
 impl UiAssets {
     fn palette_color(&self, key: &str, fallback: Color) -> Color {
-        let Some(channels) = self
-            .palette
-            .get(key)
-            .and_then(Value::as_array)
-            .filter(|value| value.len() == 4)
-        else {
-            return fallback;
-        };
-        let channel = |index: usize, default: u8| {
-            channels[index]
-                .as_u64()
-                .filter(|value| *value <= 255)
-                .map_or(default, |value| value as u8)
-        };
-        Color::RGBA(
-            channel(0, fallback.r),
-            channel(1, fallback.g),
-            channel(2, fallback.b),
-            channel(3, fallback.a),
-        )
+        let channels = crate::frontend::skin_metadata::palette_color(
+            &self.palette,
+            key,
+            [fallback.r, fallback.g, fallback.b, fallback.a],
+        );
+        Color::RGBA(channels[0], channels[1], channels[2], channels[3])
     }
 
     fn new(canvas: &Canvas<Window>, root: &Path, games: &[Game]) -> Result<Self, String> {
         let creator = canvas.texture_creator();
         let layout = read_json(&root.join("skin/layout.json"))?;
         let strings_file = read_json(&root.join("skin/strings.json"))?;
+        let (locale, default_strings) = crate::frontend::languages::default_table(&strings_file);
         let theme = read_json(&root.join("skin/theme.json"))?;
+        let theme_info = crate::frontend::skin_metadata::decode_theme(&theme);
         let packed = read_json(&root.join("skin/packed.json"))?;
-        let sprites = packed
-            .get("sprites")
-            .and_then(Value::as_object)
-            .ok_or("Clover packed atlas has no sprite table")?
-            .iter()
-            .filter_map(|(key, item)| {
-                let frame = item.get("textureFrame")?.as_array()?;
-                if frame.len() != 4 {
-                    return None;
-                }
-                Some((
-                    key.clone(),
-                    FRect::new(
-                        frame[0].as_f64()? as f32,
-                        frame[1].as_f64()? as f32,
-                        frame[2].as_f64()? as f32,
-                        frame[3].as_f64()? as f32,
-                    ),
-                ))
-            })
+        let sprites = crate::frontend::skin_metadata::decode_sprites(&packed)?
+            .into_iter()
+            .map(|(key, frame)| (key, FRect::new(frame.x, frame.y, frame.w, frame.h)))
             .collect();
-        let color = |name: &str, fallback: [u8; 4]| -> Color {
-            theme
-                .pointer(&format!("/colors/{name}"))
-                .and_then(Value::as_array)
-                .filter(|v| v.len() == 4)
-                .map(|v| {
-                    Color::RGBA(
-                        v[0].as_u64().unwrap_or(fallback[0] as u64) as u8,
-                        v[1].as_u64().unwrap_or(fallback[1] as u64) as u8,
-                        v[2].as_u64().unwrap_or(fallback[2] as u64) as u8,
-                        v[3].as_u64().unwrap_or(fallback[3] as u64) as u8,
-                    )
-                })
-                .unwrap_or(Color::RGBA(
-                    fallback[0],
-                    fallback[1],
-                    fallback[2],
-                    fallback[3],
-                ))
-        };
+        let title = crate::frontend::skin_metadata::initial_color(&theme, "title", [0, 0, 0, 255]);
+        let hud =
+            crate::frontend::skin_metadata::initial_color(&theme, "hud", [255, 255, 255, 255]);
         let mut result = Self {
-            nes: theme.get("system").and_then(Value::as_str) == Some("nes"),
-            palette: theme.get("colors").cloned().unwrap_or_else(|| json!({})),
+            nes: theme_info.nes,
+            palette: theme_info.palette,
             root: root.to_path_buf(),
             creator,
             textures: HashMap::new(),
             sprites,
             fonts: BTreeMap::new(),
             layout,
-            strings: strings_file
-                .get("strings")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-            default_strings: strings_file
-                .get("strings")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
+            strings: default_strings.clone(),
+            default_strings,
             languages: BTreeMap::new(),
-            title_color: color("title", [0, 0, 0, 255]),
-            hud_color: color("hud", [255, 255, 255, 255]),
-            region: theme
-                .get("region")
-                .and_then(Value::as_str)
-                .unwrap_or("Europe")
-                .to_owned(),
-            locale: strings_file
-                .get("locale")
-                .and_then(Value::as_str)
-                .unwrap_or("usa_en")
-                .to_owned(),
+            title_color: Color::RGBA(title[0], title[1], title[2], title[3]),
+            hud_color: Color::RGBA(hud[0], hud[1], hud[2], hud[3]),
+            region: theme_info.region,
+            locale,
         };
         let language_index = root.join("skin/languages.json");
         if language_index.is_file() {
             let index = read_json(&language_index)?;
-            let locales = index
-                .get("locales")
-                .and_then(Value::as_array)
-                .ok_or("Invalid language index")?;
-            if locales.len() > 64 {
-                return Err("Too many language tables".into());
-            }
-            for locale in locales {
-                let locale = locale
-                    .as_str()
-                    .filter(|locale| crate::skin::valid_locale(locale))
-                    .ok_or("Invalid language identifier")?;
+            for locale in crate::frontend::languages::decode_index(&index)? {
                 let table = read_json(&root.join("skin/languages").join(format!("{locale}.json")))?;
-                let strings = table
-                    .get("strings")
-                    .and_then(Value::as_object)
-                    .ok_or("Invalid language table")?;
-                if strings.len() >= 5000 || !strings.values().all(Value::is_string) {
-                    return Err("Invalid language strings".into());
-                }
                 result
                     .languages
-                    .insert(locale.to_owned(), Value::Object(strings.clone()));
+                    .insert(locale, crate::frontend::languages::decode_table(&table)?);
             }
         }
-        result
-            .languages
-            .entry(result.locale.clone())
-            .or_insert_with(|| result.default_strings.clone());
+        crate::frontend::languages::register_default(
+            &mut result.languages,
+            result.locale.clone(),
+            &result.default_strings,
+        );
         result.load_texture("skin/packed.png")?;
         result.load_texture("skin/wall.png")?;
         for game in games {
@@ -257,57 +138,9 @@ impl UiAssets {
                 continue;
             }
             let data = read_json(&path)?;
-            let mut glyphs = BTreeMap::new();
-            if let Some(items) = data.get("glyphs").and_then(Value::as_object) {
-                for (code, item) in items {
-                    let Ok(code) = code.parse::<u32>() else {
-                        continue;
-                    };
-                    let Some(character) = char::from_u32(code) else {
-                        continue;
-                    };
-                    let n = |key: &str| item.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32;
-                    glyphs.insert(
-                        character,
-                        Glyph {
-                            source: FRect::new(n("x"), n("y"), n("width"), n("height")),
-                            x: n("xOffset"),
-                            y: n("yOffset"),
-                            advance: n("advance"),
-                        },
-                    );
-                }
-            }
-            let mut kernings = BTreeMap::new();
-            if let Some(items) = data.get("kernings").and_then(Value::as_object) {
-                for (key, value) in items {
-                    let Some((left, right)) = key.split_once(':') else {
-                        continue;
-                    };
-                    let (Ok(left), Ok(right)) = (left.parse::<u32>(), right.parse::<u32>()) else {
-                        continue;
-                    };
-                    if let (Some(left), Some(right), Some(amount)) =
-                        (char::from_u32(left), char::from_u32(right), value.as_f64())
-                    {
-                        kernings.insert((left, right), amount as f32);
-                    }
-                }
-            }
+            let font = crate::frontend::font::decode(&data);
             result.load_texture(&format!("skin/font-{name}.png"))?;
-            result.fonts.insert(
-                name.to_owned(),
-                Font {
-                    size: data.get("fontSize").and_then(Value::as_f64).unwrap_or(16.0) as f32,
-                    line: data
-                        .get("lineHeight")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(20.0) as f32,
-                    baseline: data.get("baseline").and_then(Value::as_f64).unwrap_or(0.0) as f32,
-                    glyphs,
-                    kernings,
-                },
-            );
+            result.fonts.insert(name.to_owned(), font);
         }
         Ok(result)
     }
@@ -375,12 +208,7 @@ impl UiAssets {
     }
 
     fn translate(&self, key: &str, fallback: &str) -> String {
-        self.strings
-            .get(key)
-            .and_then(Value::as_str)
-            .or_else(|| self.default_strings.get(key).and_then(Value::as_str))
-            .unwrap_or(fallback)
-            .to_owned()
+        crate::frontend::languages::translate(&self.strings, &self.default_strings, key, fallback)
     }
 
     fn set_language(&mut self, locale: &str) -> Result<(), String> {
@@ -391,96 +219,7 @@ impl UiAssets {
     }
 
     fn measure(&self, value: &str, primary_name: &str) -> TextLayout {
-        let Some(primary) = self.fonts.get(primary_name) else {
-            return TextLayout {
-                glyphs: Vec::new(),
-                advance: 0.0,
-                line: 0.0,
-                left: 0.0,
-                top: 0.0,
-                right: 0.0,
-                bottom: 0.0,
-            };
-        };
-        let mut layout = TextLayout {
-            glyphs: Vec::new(),
-            advance: 0.0,
-            line: primary.line,
-            left: 0.0,
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-        };
-        let mut first = true;
-        let mut previous: Option<(String, char)> = None;
-        for character in value.chars().take(4096) {
-            let chosen = if primary.glyphs.contains_key(&character) {
-                Some(primary_name.to_owned())
-            } else {
-                self.fonts.iter().find_map(|(name, font)| {
-                    font.glyphs.contains_key(&character).then(|| name.clone())
-                })
-            };
-            let mut character = character;
-            let name = chosen.or_else(|| {
-                character = '?';
-                if primary.glyphs.contains_key(&character) {
-                    Some(primary_name.to_owned())
-                } else {
-                    self.fonts.iter().find_map(|(name, font)| {
-                        font.glyphs.contains_key(&character).then(|| name.clone())
-                    })
-                }
-            });
-            let Some(name) = name else { continue };
-            let Some(font) = self.fonts.get(&name) else {
-                continue;
-            };
-            let Some(glyph) = font.glyphs.get(&character).copied() else {
-                continue;
-            };
-            let scale = primary.size / font.size.max(1.0);
-            if let Some((_, previous_char)) = previous
-                .as_ref()
-                .filter(|(previous_name, _)| previous_name == &name)
-            {
-                layout.advance += font
-                    .kernings
-                    .get(&(*previous_char, character))
-                    .copied()
-                    .unwrap_or(0.0)
-                    * scale;
-            }
-            let x = layout.advance + glyph.x * scale;
-            let y = primary.baseline - font.baseline * scale + glyph.y * scale;
-            let width = glyph.source.w * scale;
-            let height = glyph.source.h * scale;
-            layout.glyphs.push(PlacedGlyph {
-                font: name.clone(),
-                source: glyph.source,
-                x,
-                y,
-                width,
-                height,
-            });
-            if character != ' ' && width > 0.0 && height > 0.0 {
-                if first {
-                    layout.left = x;
-                    layout.top = y;
-                    layout.right = x + width;
-                    layout.bottom = y + height;
-                    first = false;
-                } else {
-                    layout.left = layout.left.min(x);
-                    layout.top = layout.top.min(y);
-                    layout.right = layout.right.max(x + width);
-                    layout.bottom = layout.bottom.max(y + height);
-                }
-            }
-            layout.advance += glyph.advance * scale;
-            previous = Some((name, character));
-        }
-        layout
+        crate::frontend::font::measure(&self.fonts, value, primary_name)
     }
 
     fn draw_texture(
@@ -601,7 +340,19 @@ impl UiAssets {
                 glyph.width * scale,
                 glyph.height * scale,
             );
-            self.draw_texture(canvas, &key, dest, Some(glyph.source), color, true);
+            self.draw_texture(
+                canvas,
+                &key,
+                dest,
+                Some(FRect::new(
+                    glyph.source.x,
+                    glyph.source.y,
+                    glyph.source.w,
+                    glyph.source.h,
+                )),
+                color,
+                true,
+            );
         }
     }
 
@@ -676,14 +427,11 @@ struct AudioOut {
 }
 
 enum DialogMessage {
-    Rom {
-        game: String,
-        path: PathBuf,
-        start: bool,
-    },
-    Firmware(PathBuf),
-    Image(PathBuf),
-    Error(String),
+    Picked(
+        dialog_requests::Kind,
+        crate::frontend::requests::RequestId,
+        crate::frontend::requests::Outcome<PathBuf, String>,
+    ),
 }
 
 impl AudioOut {
@@ -816,6 +564,7 @@ struct App {
     title_dirty: bool,
     dialog_sender: Sender<DialogMessage>,
     dialog_receiver: Receiver<DialogMessage>,
+    picker_requests: dialog_requests::Requests,
     running_game: Option<String>,
     playing: bool,
     menu_focus: MenuFocus,
@@ -826,16 +575,18 @@ struct App {
     confirm_target: Option<(String, usize)>,
     running_rom: Option<PathBuf>,
     panel_scroll: usize,
+    image_import: app_import::AppImport,
+    last_notice: String,
+    notice_owned: bool,
+    preview_import_notice: Option<crate::ui::launcher::import_worker::CancellationView>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MenuFocus {
-    Games,
-    Toolbar,
-}
+type MenuFocus = crate::frontend::menu_navigation::MenuFocus;
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.image_import.shutdown();
+        self.picker_requests.close();
         self.clear_suspend_previews();
     }
 }
@@ -871,9 +622,10 @@ impl App {
         } else {
             json!({})
         };
-        let firmware_path = preferences
-            .get("firmware")
-            .and_then(Value::as_str)
+        let restored = crate::frontend::preferences::decode(&preferences)?;
+        let firmware_path = restored
+            .firmware
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| data_path.join("firmware"));
         let profiles = crate::profile::list_profiles(&profile_cache);
@@ -933,6 +685,7 @@ impl App {
             title_dirty: false,
             dialog_sender,
             dialog_receiver,
+            picker_requests: dialog_requests::Requests::default(),
             running_game: None,
             playing: false,
             menu_focus: MenuFocus::Games,
@@ -943,35 +696,21 @@ impl App {
             confirm_target: None,
             running_rom: None,
             panel_scroll: 0,
+            image_import: app_import::AppImport::default(),
+            last_notice: String::new(),
+            notice_owned: false,
+            preview_import_notice: None,
         };
         app.selected = app
             .games
             .iter()
-            .position(|g| app.preferences.get("selected").and_then(Value::as_str) == Some(&g.id))
+            .position(|g| restored.selected.as_deref() == Some(&g.id))
             .unwrap_or(0);
-        app.sort = app
-            .preferences
-            .get("sort")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            .min(5) as usize;
-        app.slot = app
-            .preferences
-            .get("slot")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            .min(3) as usize;
-        app.sound = app
-            .preferences
-            .get("sound")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        app.motion = app
-            .preferences
-            .get("motion")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        if let Some(locale) = app.preferences.get("language").and_then(Value::as_str) {
+        app.sort = restored.sort;
+        app.slot = restored.slot;
+        app.sound = restored.sound;
+        app.motion = restored.motion;
+        if let Some(locale) = restored.language.as_deref() {
             let _ = app.art.set_language(locale);
         }
         app.sort_games();
@@ -1034,18 +773,25 @@ impl App {
     }
 
     fn save_settings(&mut self) -> Result<(), String> {
-        self.preferences["schema"] = json!(1);
-        self.preferences["selected"] = json!(self.selected().id);
-        self.preferences["sort"] = json!(self.sort);
-        self.preferences["slot"] = json!(self.slot);
-        self.preferences["sound"] = json!(self.sound);
-        self.preferences["motion"] = json!(self.motion);
-        self.preferences["language"] = json!(self.art.locale);
-        self.preferences["firmware"] = json!(self.firmware_path.to_string_lossy());
-        atomic_json(&self.data_path.join("preferences.json"), &self.preferences)
+        let snapshot = crate::frontend::preferences::MenuSnapshot {
+            selected: self.selected().id.clone(),
+            sort: self.sort,
+            slot: self.slot,
+            sound: self.sound,
+            motion: self.motion,
+            language: self.art.locale.clone(),
+            firmware: self.firmware_path.to_string_lossy().into_owned(),
+        };
+        save_preference_document(
+            &self.data_path.join("preferences.json"),
+            &mut self.preferences,
+            &snapshot,
+        )
     }
 
     fn switch_profile(&mut self, canvas: &Canvas<Window>, profile: crate::profile::Profile) {
+        self.image_import.invalidate();
+        self.picker_requests.invalidate();
         let _ = self.save_settings();
         if let Some(core) = self.core.as_mut()
             && core.is_loaded()
@@ -1074,51 +820,30 @@ impl App {
             } else {
                 json!({})
             };
-            Ok::<_, String>((games, art, preferences))
+            let restored = crate::frontend::preferences::decode(&preferences)?;
+            Ok::<_, String>((games, art, preferences, restored))
         })();
         match result {
-            Ok((games, art, preferences)) => {
+            Ok((games, art, preferences, restored)) => {
                 self.assets_path = assets_path;
                 self.data_path = data_path;
                 self.games = games;
                 self.art = art;
                 self.preferences = preferences;
-                if let Some(locale) = self.preferences.get("language").and_then(Value::as_str) {
+                if let Some(locale) = restored.language.as_deref() {
                     let _ = self.art.set_language(locale);
                 }
                 self.selected = self
                     .games
                     .iter()
-                    .position(|game| {
-                        self.preferences.get("selected").and_then(Value::as_str) == Some(&game.id)
-                    })
+                    .position(|game| restored.selected.as_deref() == Some(&game.id))
                     .unwrap_or(0);
-                self.sort = self
-                    .preferences
-                    .get("sort")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-                    .min(5) as usize;
-                self.slot = self
-                    .preferences
-                    .get("slot")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-                    .min(3) as usize;
-                self.sound = self
-                    .preferences
-                    .get("sound")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                self.motion = self
-                    .preferences
-                    .get("motion")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
-                self.firmware_path = self
-                    .preferences
-                    .get("firmware")
-                    .and_then(Value::as_str)
+                self.sort = restored.sort;
+                self.slot = restored.slot;
+                self.sound = restored.sound;
+                self.motion = restored.motion;
+                self.firmware_path = restored
+                    .firmware
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.data_path.join("firmware"));
                 self.frame_texture = None;
@@ -1155,7 +880,22 @@ impl App {
         }
     }
 
-    fn choose_image(&self, canvas: &Canvas<Window>) {
+    fn choose_image(&mut self, canvas: &Canvas<Window>) {
+        if self.image_import.is_busy() {
+            return;
+        }
+        let context = dialog_requests::Context {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+            start: false,
+        };
+        let Ok(id) = self.picker_requests.begin(
+            dialog_requests::Kind::Image,
+            context,
+            crate::frontend::requests::Capability::Available,
+        ) else {
+            return;
+        };
         let sender = self.dialog_sender.clone();
         let filters = [DialogFileFilter {
             name: "NES / SNES Classic image",
@@ -1166,21 +906,19 @@ impl App {
             None::<&Path>,
             false,
             Some(canvas.window()),
-            Box::new(move |result, _| match result {
-                Ok(paths) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = sender.send(DialogMessage::Image(path));
-                    }
-                }
-                Err(DialogError::Canceled) => {}
-                Err(error) => {
-                    let _ = sender.send(DialogMessage::Error(error.to_string()));
-                }
+            Box::new(move |result, _| {
+                let _ = sender.send(DialogMessage::Picked(
+                    dialog_requests::Kind::Image,
+                    id,
+                    dialog_requests::map_dialog(result),
+                ));
             }),
         ) {
-            let _ = self
-                .dialog_sender
-                .send(DialogMessage::Error(error.to_string()));
+            let _ = self.dialog_sender.send(DialogMessage::Picked(
+                dialog_requests::Kind::Image,
+                id,
+                crate::frontend::requests::Outcome::Failed(error.to_string()),
+            ));
         }
     }
 
@@ -1203,6 +941,8 @@ impl App {
     }
 
     fn move_selection(&mut self, direction: i32) {
+        self.image_import.invalidate();
+        self.picker_requests.invalidate();
         let n = self.games.len() as i32;
         self.selected = (self.selected as i32 + direction).rem_euclid(n) as usize;
         let mut target = self.selected as f32;
@@ -1246,6 +986,8 @@ impl App {
             self.message = "The selected ROM belongs to a different console system. Choose a compatible ROM in emulator settings.".into();
             return false;
         }
+        self.picker_requests.invalidate();
+        self.image_import.invalidate();
         let Some(core) = self.core.as_mut() else {
             match crate::ares::AresSession::new() {
                 Ok(core) => self.core = Some(core),
@@ -1324,8 +1066,19 @@ impl App {
             .then_some(path)
     }
 
-    fn choose_rom(&self, canvas: &Canvas<Window>, start: bool) {
-        let game = self.selected().id.clone();
+    fn choose_rom(&mut self, canvas: &Canvas<Window>, start: bool) {
+        let context = dialog_requests::Context {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+            start,
+        };
+        let Ok(id) = self.picker_requests.begin(
+            dialog_requests::Kind::Rom,
+            context,
+            crate::frontend::requests::Capability::Available,
+        ) else {
+            return;
+        };
         let sender = self.dialog_sender.clone();
         let filters = [DialogFileFilter {
             name: if self.art.nes {
@@ -1340,25 +1093,19 @@ impl App {
             None::<&Path>,
             false,
             Some(canvas.window()),
-            Box::new(move |result, _| match result {
-                Ok(paths) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = sender.send(DialogMessage::Rom {
-                            game: game.clone(),
-                            path,
-                            start,
-                        });
-                    }
-                }
-                Err(DialogError::Canceled) => {}
-                Err(error) => {
-                    let _ = sender.send(DialogMessage::Error(error.to_string()));
-                }
+            Box::new(move |result, _| {
+                let _ = sender.send(DialogMessage::Picked(
+                    dialog_requests::Kind::Rom,
+                    id,
+                    dialog_requests::map_dialog(result),
+                ));
             }),
         ) {
-            let _ = self
-                .dialog_sender
-                .send(DialogMessage::Error(error.to_string()));
+            let _ = self.dialog_sender.send(DialogMessage::Picked(
+                dialog_requests::Kind::Rom,
+                id,
+                crate::frontend::requests::Outcome::Failed(error.to_string()),
+            ));
         }
     }
 
@@ -1375,30 +1122,106 @@ impl App {
         }
     }
 
-    fn choose_firmware(&self, canvas: &Canvas<Window>) {
+    fn choose_firmware(&mut self, canvas: &Canvas<Window>) {
+        let context = dialog_requests::Context {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+            start: false,
+        };
+        let Ok(id) = self.picker_requests.begin(
+            dialog_requests::Kind::Firmware,
+            context,
+            crate::frontend::requests::Capability::Available,
+        ) else {
+            return;
+        };
         let sender = self.dialog_sender.clone();
         dialog::show_open_folder_dialog(
             None::<&Path>,
             false,
             Some(canvas.window()),
-            Box::new(move |result, _| match result {
-                Ok(paths) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = sender.send(DialogMessage::Firmware(path));
-                    }
-                }
-                Err(DialogError::Canceled) => {}
-                Err(error) => {
-                    let _ = sender.send(DialogMessage::Error(error.to_string()));
-                }
+            Box::new(move |result, _| {
+                let _ = sender.send(DialogMessage::Picked(
+                    dialog_requests::Kind::Firmware,
+                    id,
+                    dialog_requests::map_dialog(result),
+                ));
             }),
         );
     }
 
-    fn process_dialogs(&mut self, canvas: &Canvas<Window>) {
-        while let Ok(message) = self.dialog_receiver.try_recv() {
+    fn process_dialogs(&mut self, canvas: &Canvas<Window>, closing: bool) {
+        let messages = host::take_dialog_batch(self.dialog_receiver.try_iter());
+        for message in messages {
             match message {
-                DialogMessage::Rom { game, path, start } => {
+                DialogMessage::Picked(kind, id, outcome) => {
+                    let current = dialog_requests::Context {
+                        profile: self.data_path.clone(),
+                        game: self.selected().id.clone(),
+                        start: false,
+                    };
+                    let Some(action) = self.picker_requests.finish(id, kind, outcome, &current)
+                    else {
+                        continue;
+                    };
+                    let (context, path) = match action {
+                        dialog_requests::Action::Selected(
+                            dialog_requests::Kind::Image,
+                            context,
+                            path,
+                        ) => {
+                            debug_assert!(!context.start);
+                            if self.image_import.is_busy() {
+                                continue;
+                            }
+                            let target = app_import::Target {
+                                profile: context.profile,
+                                game: context.game,
+                            };
+                            match self
+                                .image_import
+                                .start(target, path, self.profile_cache.clone())
+                            {
+                                Ok(_) => {
+                                    self.panel = "message".into();
+                                    self.message = self.image_import.notice_text().into();
+                                    self.last_notice = self.message.clone();
+                                    self.notice_owned = true;
+                                }
+                                Err(error) => {
+                                    self.panel = "message".into();
+                                    self.message = error;
+                                }
+                            }
+                            continue;
+                        }
+                        dialog_requests::Action::Selected(
+                            dialog_requests::Kind::Rom,
+                            context,
+                            path,
+                        ) => (context, path),
+                        dialog_requests::Action::Selected(
+                            dialog_requests::Kind::Firmware,
+                            _context,
+                            path,
+                        ) => {
+                            if fs::symlink_metadata(&path)
+                                .is_ok_and(|metadata| metadata.file_type().is_dir())
+                            {
+                                self.firmware_path = path;
+                                let _ = self.save_settings();
+                            }
+                            continue;
+                        }
+                        dialog_requests::Action::Error(error) => {
+                            self.panel = "message".into();
+                            self.message = error;
+                            continue;
+                        }
+                        dialog_requests::Action::Done => continue,
+                    };
+                    let game = context.game;
+                    let start = context.start;
                     if !safe_id(&game)
                         || !self.games.iter().any(|entry| entry.id == game)
                         || !self.rom_extension_allowed(&path)
@@ -1418,30 +1241,107 @@ impl App {
                         self.begin_game(canvas);
                     }
                 }
-                DialogMessage::Firmware(path) => {
-                    if fs::symlink_metadata(&path)
-                        .is_ok_and(|metadata| metadata.file_type().is_dir())
-                    {
-                        self.firmware_path = path;
-                        let _ = self.save_settings();
-                    }
-                }
-                DialogMessage::Image(path) => {
-                    self.panel = "message".into();
-                    self.message = "Importing image...".into();
-                    match crate::profile::import_image(&path, &self.profile_cache, None) {
-                        Ok(profile) => self.switch_profile(canvas, profile),
-                        Err(error) => {
-                            self.message = error;
-                        }
-                    }
-                }
-                DialogMessage::Error(error) => {
-                    self.panel = "message".into();
-                    self.message = error;
-                }
             }
         }
+        let current = app_import::Target {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+        };
+        let matches_notice = self.owns_notice(&self.panel, &self.message);
+        if !matches_notice || self.playing {
+            self.notice_owned = false;
+        }
+        let notice_owned = matches_notice && self.notice_owned;
+        let update = self
+            .image_import
+            .update(&current, notice_owned, self.playing, closing);
+        if update.progress.is_some() && update.completion.is_none() && notice_owned {
+            self.message = self.image_import.notice_text().into();
+            self.last_notice = self.message.clone();
+        }
+        if let Some(result) = update.completion {
+            match result {
+                app_import::Poll::Switch(profile) => {
+                    self.profiles = crate::profile::list_profiles(&self.profile_cache);
+                    self.switch_profile(canvas, profile);
+                }
+                app_import::Poll::CachedOnly => {
+                    self.profiles = crate::profile::list_profiles(&self.profile_cache);
+                }
+                app_import::Poll::Cancelled => {
+                    self.message = "Image import cancelled.".into();
+                }
+                app_import::Poll::Error(error) => {
+                    self.message = error;
+                }
+                app_import::Poll::Silent | app_import::Poll::RetiredSilent => {}
+            }
+            self.notice_owned = false;
+        }
+    }
+
+    fn owns_notice(&self, panel: &str, message: &str) -> bool {
+        self.image_import.is_busy()
+            && self.notice_owned
+            && panel == "message"
+            && message == self.last_notice
+    }
+
+    pub(super) fn owned_import_notice(&self) -> bool {
+        let current = app_import::Target {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+        };
+        self.image_import.cancellation_view(
+            &current,
+            self.owns_notice(&self.panel, &self.message),
+            self.playing,
+        ) != crate::ui::launcher::import_worker::CancellationView::Unavailable
+    }
+
+    fn import_cancellation_view(&self) -> crate::ui::launcher::import_worker::CancellationView {
+        if let Some(view) = self.preview_import_notice {
+            return view;
+        }
+        let current = app_import::Target {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+        };
+        let owned = self.owns_notice(&self.panel, &self.message);
+        self.image_import
+            .cancellation_view(&current, owned, self.playing)
+    }
+
+    fn request_import_cancel(&mut self) {
+        let current = app_import::Target {
+            profile: self.data_path.clone(),
+            game: self.selected().id.clone(),
+        };
+        let owned = self.owned_import_notice();
+        if let Some(
+            result @ (crate::frontend::import_lifecycle::CancelResult::Requested
+            | crate::frontend::import_lifecycle::CancelResult::TooLate),
+        ) = self
+            .image_import
+            .cancel_notice(&current, owned, self.playing)
+        {
+            self.message = self.image_import.notice_text().into();
+            self.last_notice = self.message.clone();
+            self.notice_owned = true;
+            let _ = result;
+        }
+    }
+
+    fn dismiss_import_notice(&mut self) {
+        if !self.owned_import_notice() {
+            return;
+        }
+        self.image_import.release_notice();
+        self.notice_owned = false;
+        self.panel.clear();
+        self.message.clear();
+        self.last_notice.clear();
+        self.menu_focus = MenuFocus::Games;
     }
 
     fn button_mask(&self) -> u16 {
@@ -1473,22 +1373,14 @@ impl App {
             PadButton::LeftShoulder,
             PadButton::RightShoulder,
         ];
-        (if self.pad_blocked {
-            0
-        } else {
-            self.stick.mask()
-        }) | keyboard
-            .iter()
-            .zip(gamepad)
-            .enumerate()
-            .fold(0, |mask, (index, (key, button))| {
-                if self.held.contains(key) || (!self.pad_blocked && self.pad_held.contains(&button))
-                {
-                    mask | (1 << index)
-                } else {
-                    mask
-                }
-            })
+        let keyboard = keyboard.map(|key| self.held.contains(&key));
+        let gamepad = gamepad.map(|button| self.pad_held.contains(&button));
+        crate::frontend::gameplay::button_mask(
+            keyboard,
+            gamepad,
+            self.stick.mask(),
+            self.pad_blocked,
+        )
     }
 
     fn pad_button_down(&mut self, button: PadButton, canvas: &Canvas<Window>) {
@@ -1507,27 +1399,15 @@ impl App {
             }
             return;
         }
-        let key = match button {
-            PadButton::DPadLeft => Some(Scancode::Left),
-            PadButton::DPadRight => Some(Scancode::Right),
-            PadButton::DPadUp => Some(Scancode::Up),
-            PadButton::DPadDown => Some(Scancode::Down),
-            PadButton::Start if self.panel == "resume" => Some(Scancode::R),
-            PadButton::South | PadButton::Start => Some(Scancode::Return),
-            PadButton::East => Some(Scancode::Escape),
-            PadButton::North => Some(Scancode::X),
-            PadButton::West => Some(Scancode::S),
-            PadButton::Back => Some(Scancode::Delete),
-            _ => None,
-        };
-        if let Some(key) = key {
-            if matches!(
-                key,
-                Scancode::Left | Scancode::Right | Scancode::Up | Scancode::Down
-            ) {
+        let button = input::native_button(button);
+        if let Some(key) = crate::frontend::menu_input::menu_key(button, self.panel == "resume") {
+            if matches!(key, Key::Left | Key::Right | Key::Up | Key::Down) {
                 self.pad_repeat.pressed(key, Instant::now());
             }
-            self.handle_key(key, false, canvas);
+            self.handle_menu_input(
+                crate::frontend::menu_input::KeyEvent { key, repeat: false },
+                canvas,
+            );
         }
     }
 
@@ -1566,16 +1446,19 @@ impl App {
             return;
         }
         let direction = [
-            (PadButton::DPadUp, Scancode::Up),
-            (PadButton::DPadDown, Scancode::Down),
-            (PadButton::DPadLeft, Scancode::Left),
-            (PadButton::DPadRight, Scancode::Right),
+            (PadButton::DPadUp, Key::Up),
+            (PadButton::DPadDown, Key::Down),
+            (PadButton::DPadLeft, Key::Left),
+            (PadButton::DPadRight, Key::Right),
         ]
         .into_iter()
         .find_map(|(button, key)| self.pad_held.contains(&button).then_some(key))
         .or_else(|| self.stick.menu_key());
         if let Some((key, repeat)) = self.pad_repeat.poll(direction, Instant::now()) {
-            self.handle_key(key, repeat, canvas);
+            self.handle_menu_input(
+                crate::frontend::menu_input::KeyEvent { key, repeat },
+                canvas,
+            );
         }
     }
 
@@ -1750,6 +1633,8 @@ impl App {
             "rom" => self.choose_rom(canvas, false),
             "firmware" => self.choose_firmware(canvas),
             "import-image" => self.choose_image(canvas),
+            "cancel-import" => self.request_import_cancel(),
+            "dismiss-import" => self.dismiss_import_notice(),
             "close" => {
                 if self.panel == "emulator-settings" {
                     self.panel = "settings".into();
@@ -1837,6 +1722,10 @@ impl App {
             _ if action.starts_with("game:") => {
                 self.menu_focus = MenuFocus::Games;
                 if let Some(index) = self.games.iter().position(|g| g.id == action[5..]) {
+                    if index != self.selected {
+                        self.image_import.invalidate();
+                        self.picker_requests.invalidate();
+                    }
                     self.selected = index;
                     self.scroll_current = index as f32;
                     self.scroll_from = self.scroll_current;
@@ -2455,7 +2344,10 @@ impl App {
             true,
         );
         let mut y = 227.0;
-        let entries: Vec<(String, String)> = if self.panel == "profiles" {
+        let import_notice = self.owned_import_notice() || self.preview_import_notice.is_some();
+        let entries: Vec<(String, String)> = if import_notice {
+            vec![("dismiss-import".into(), "Continue browsing".into())]
+        } else if self.panel == "profiles" {
             let mut profiles: Vec<_> = self
                 .profiles
                 .iter()
@@ -2653,7 +2545,17 @@ impl App {
             self.hit(action.clone(), rect);
             y += row_height;
         }
-        let back = self.art.translate("sys_option_hud_Return", "Back");
+        let cancellation_view = if import_notice {
+            self.import_cancellation_view()
+        } else {
+            crate::ui::launcher::import_worker::CancellationView::Unavailable
+        };
+        let (import_footer_label, footer_action) = import_footer(cancellation_view);
+        let back = if import_notice {
+            import_footer_label.to_owned()
+        } else {
+            self.art.translate("sys_option_hud_Return", "Back")
+        };
         let back_width = self.art.measure(&back, "s").advance;
         let total = 40.0 + back_width;
         self.art.sprite(
@@ -2675,11 +2577,19 @@ impl App {
             1200.0,
             true,
         );
-        self.hit(
-            "close",
-            FRect::new(640.0 - total * 0.5 - 12.0, 543.0, total + 24.0, 48.0),
-        );
-        self.actions.push("close".into());
+        if let Some(action) = footer_action {
+            self.hit(
+                action,
+                FRect::new(640.0 - total * 0.5 - 12.0, 543.0, total + 24.0, 48.0),
+            );
+            self.actions.push(action.into());
+        } else if !import_notice {
+            self.hit(
+                "close",
+                FRect::new(640.0 - total * 0.5 - 12.0, 543.0, total + 24.0, 48.0),
+            );
+            self.actions.push("close".into());
+        }
     }
 
     fn render_game(&mut self, canvas: &mut Canvas<Window>) {
@@ -2723,222 +2633,23 @@ impl App {
             .event_pump()
             .map_err(|e| e.to_string())?;
         let mut running = true;
-        let mut stage = self
-            .art
-            .creator
-            .create_texture(PixelFormat::RGBA8888, TextureAccess::Target, 1280, 720)
-            .map_err(|e| e.to_string())?;
-        stage.set_blend_mode(BlendMode::None);
-        stage.set_scale_mode(ScaleMode::Linear);
+        let mut stage = self.create_native_stage()?;
         canvas.set_blend_mode(BlendMode::Blend);
         let mut pacer = timing::FramePacer::new(canvas, frame_limit == 0);
-        let mut rendered = 0usize;
+        let mut frame_limit = crate::frontend::frame_limit::FrameLimit::new(frame_limit);
         while running {
-            for event in events.poll_iter() {
-                match event {
-                    Event::Quit { .. } => running = false,
-                    Event::Window {
-                        win_event: sdl3::event::WindowEvent::FocusLost,
-                        ..
-                    } => {
-                        self.held.clear();
-                        self.pad_held.clear();
-                        self.stick.clear();
-                        self.pad_repeat.clear();
-                        self.pad_blocked = self.gamepad.is_some();
-                    }
-                    #[cfg(target_os = "macos")]
-                    Event::User { type_, code, .. }
-                        if type_ == unsafe { clover_native_menu_event() } =>
-                    {
-                        if self.playing && code != 8 {
-                            self.leave_game();
-                        }
-                        match code {
-                            1 => self.activate("profiles", canvas),
-                            2 => self.choose_image(canvas),
-                            3 => self.activate("toolbar:1", canvas),
-                            4 => self.choose_rom(canvas, false),
-                            5 => self.choose_firmware(canvas),
-                            6 => self.activate("sort", canvas),
-                            7 => self.activate("sound", canvas),
-                            8 => self.activate("fullscreen", canvas),
-                            9 => self.activate("toolbar:4", canvas),
-                            10 => running = false,
-                            _ => {}
-                        }
-                    }
-                    Event::KeyDown {
-                        scancode: Some(code),
-                        repeat,
-                        ..
-                    } => {
-                        self.held.insert(code);
-                        self.handle_key(code, repeat, canvas);
-                    }
-                    Event::KeyUp {
-                        scancode: Some(code),
-                        ..
-                    } => {
-                        self.held.remove(&code);
-                    }
-                    Event::MouseMotion { x, y, .. } if !self.playing => {
-                        self.menu_focus = MenuFocus::Games;
-                        let (x, y) = to_stage(canvas, x, y);
-                        self.hover.clear();
-                        for hit in self.hits.iter().rev() {
-                            if point_inside(x, y, hit.rect) {
-                                self.hover = hit.action.clone();
-                                break;
-                            }
-                        }
-                    }
-                    Event::MouseWheel { y, .. } if !self.playing && self.panel == "toolbar:3" => {
-                        for _ in 0..(y.abs().ceil() as usize).min(8) {
-                            self.scroll_legal(y < 0.0);
-                        }
-                    }
-                    Event::MouseButtonDown {
-                        mouse_btn: sdl3::mouse::MouseButton::Left,
-                        clicks,
-                        x,
-                        y,
-                        ..
-                    } if !self.playing => {
-                        let (x, y) = to_stage(canvas, x, y);
-                        let action = self
-                            .hits
-                            .iter()
-                            .rev()
-                            .find(|hit| point_inside(x, y, hit.rect))
-                            .map(|hit| hit.action.clone());
-                        if let Some(action) = action {
-                            self.activate(&action, canvas);
-                            if clicks >= 2 && action.starts_with("game:") {
-                                self.begin_game(canvas);
-                            }
-                        }
-                    }
-                    Event::ControllerDeviceAdded { which, .. } if self.gamepad.is_none() => {
-                        self.gamepad = self
-                            .gamepad_subsystem
-                            .open(sdl3::sys::joystick::SDL_JoystickID(which))
-                            .ok();
-                        self.gamepad_id = self
-                            .gamepad
-                            .as_ref()
-                            .and_then(|pad| pad.id().ok())
-                            .map(u32::from);
-                        self.pad_blocked = self.gamepad.is_some();
-                    }
-                    Event::ControllerDeviceRemoved { which, .. }
-                        if self.gamepad_id == Some(which) =>
-                    {
-                        if self.playing {
-                            self.leave_game();
-                        }
-                        self.gamepad = None;
-                        self.pad_held.clear();
-                        self.stick.clear();
-                        self.pad_repeat.clear();
-                        self.gamepad = self.gamepad_subsystem.gamepads().ok().and_then(|ids| {
-                            ids.into_iter()
-                                .filter(|id| id.0 != which)
-                                .find_map(|id| self.gamepad_subsystem.open(id).ok())
-                        });
-                        self.gamepad_id = self
-                            .gamepad
-                            .as_ref()
-                            .and_then(|pad| pad.id().ok())
-                            .map(u32::from);
-                        self.pad_blocked = self.gamepad.is_some();
-                    }
-                    Event::ControllerAxisMotion {
-                        which, axis, value, ..
-                    } if self.gamepad_id == Some(which) => match axis {
-                        sdl3::gamepad::Axis::LeftX => self.stick.update(0, value),
-                        sdl3::gamepad::Axis::LeftY => self.stick.update(1, value),
-                        _ => {}
-                    },
-                    Event::ControllerButtonDown { which, button, .. }
-                        if self.gamepad_id == Some(which) =>
-                    {
-                        self.pad_button_down(button, canvas);
-                    }
-                    Event::ControllerButtonUp { which, button, .. }
-                        if self.gamepad_id == Some(which) =>
-                    {
-                        self.pad_held.remove(&button);
-                    }
-                    Event::DropFile { filename, .. } => {
-                        let path = PathBuf::from(filename);
-                        if self.rom_extension_allowed(&path) {
-                            let game = self.selected().id.clone();
-                            self.preferences["roms"][game] = json!(path.to_string_lossy());
-                            let _ = self.save_settings();
-                            self.begin_game(canvas);
-                        } else {
-                            self.panel = "message".into();
-                            self.message = if self.art.nes {
-                                "Drop a compatible .nes cartridge ROM."
-                            } else {
-                                "Drop a compatible .sfc or .smc ROM."
-                            }
-                            .into();
-                        }
-                    }
-                    _ => {}
-                }
+            for event in events.poll_iter().take(host::NATIVE_EVENT_BUDGET) {
+                self.handle_host_event(event, canvas, &mut running);
             }
-            self.poll_gamepad_navigation(canvas);
-            self.process_dialogs(canvas);
-            if self.title_dirty {
-                self.title_dirty = false;
-                if let Err(error) = canvas.window_mut().set_title(&self.window_title) {
-                    self.panel = "message".into();
-                    self.message = format!("Cannot update window title: {error}");
-                }
-            }
-            if self.fullscreen_dirty {
-                self.fullscreen_dirty = false;
-                if let Err(error) = canvas.window_mut().set_fullscreen(self.fullscreen) {
-                    self.panel = "message".into();
-                    self.message = format!("Cannot change full-screen mode: {error}");
-                }
-            }
-            if self.playing && self.panel.is_empty() {
-                self.pump_game_audio()?;
-            } else if self.sound
-                && let Some(music) = &self.music
-            {
-                music.play_loop();
-            }
-            // Resolve atlas pixels on a fixed stage before scaling to Retina/window size.
-            canvas
-                .with_texture_canvas(&mut stage, |canvas| {
-                    canvas.set_draw_color(Color::BLACK);
-                    canvas.clear();
-                    if self.playing && self.panel.is_empty() {
-                        self.render_game(canvas);
-                    } else {
-                        self.render_menu(canvas);
-                    }
-                })
-                .map_err(|e| e.to_string())?;
-            canvas.set_draw_color(Color::BLACK);
-            canvas.clear();
-            canvas
-                .copy(&stage, None, FRect::new(0.0, 0.0, 1280.0, 720.0))
-                .map_err(|e| e.to_string())?;
-            if frame_limit != 0
-                && rendered + 1 >= frame_limit
+            self.update_native_frame(canvas, !running)?;
+            self.draw_native_frame(canvas, &mut stage)?;
+            if frame_limit.capture_due()
                 && let Some(path) = screenshot
             {
                 save_screenshot(canvas, path)?;
             }
             canvas.present();
-            rendered += 1;
-            if frame_limit != 0 && rendered >= frame_limit {
+            if frame_limit.record_presented() {
                 running = false;
             }
             pacer.finish_frame();
@@ -2946,18 +2657,19 @@ impl App {
                 self.panel.clear();
             }
         }
-        if self.playing {
-            self.playing = false;
-            self.capture_pending()?;
-        }
-        self.save_settings()?;
-        if let Some(core) = self.core.as_mut()
-            && core.is_loaded()
-        {
-            core.unload()
-                .map_err(|error| format!("Cannot flush game save memory: {error}"))?;
-        }
-        Ok(())
+        self.finish_native_run()
+    }
+}
+
+fn import_footer(
+    view: crate::ui::launcher::import_worker::CancellationView,
+) -> (&'static str, Option<&'static str>) {
+    use crate::ui::launcher::import_worker::CancellationView;
+    match view {
+        CancellationView::Available => ("Cancel import", Some("cancel-import")),
+        CancellationView::Requested => ("Cancelling…", None),
+        CancellationView::Finishing => ("Finishing import…", None),
+        CancellationView::Unavailable => ("Back", None),
     }
 }
 
@@ -2998,85 +2710,100 @@ fn wrap_text(art: &UiAssets, text: &str, font: &str, width: f32) -> Vec<String> 
     result
 }
 
-fn safe_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() < 100
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
 fn required_firmware_available(required: &[String], directory: &Path) -> bool {
     required.iter().all(|name| directory.join(name).is_file())
 }
 
 fn read_games(assets_path: &Path) -> Result<Vec<Game>, String> {
-    let catalog = read_json(&assets_path.join("catalog.json"))?;
-    if catalog.get("schema").and_then(Value::as_u64) != Some(1) {
-        return Err("Unsupported catalog schema".into());
-    }
-    let entries = catalog
-        .get("games")
-        .and_then(Value::as_array)
-        .ok_or("Catalog has no games")?;
-    let mut ids = HashSet::new();
-    let mut games = Vec::new();
-    for item in entries {
-        let id = item
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or("Catalog game has no id")?
-            .to_owned();
-        if !safe_id(&id) || !ids.insert(id.clone()) {
-            return Err("Invalid or duplicate catalog game ID".into());
+    let path = assets_path.join("catalog.json");
+    let bytes = read_json_bytes(&path)?;
+    catalog::decode_bytes(&bytes).map_err(|error| match error {
+        catalog::DecodeError::TooLarge => format!("Invalid JSON file: {}", path.display()),
+        catalog::DecodeError::InvalidJson(error) => {
+            format!("Invalid JSON {}: {error}", path.display())
         }
-        let string = |key: &str, fallback: &str| {
-            item.get(key)
-                .and_then(Value::as_str)
-                .unwrap_or(fallback)
-                .to_owned()
-        };
-        games.push(Game {
-            title: string("title", &id),
-            sort_title: string("sortTitle", &string("title", &id)),
-            publisher: string("publisher", ""),
-            release: string("releaseDate", ""),
-            copyright: string("copyright", ""),
-            rom: string("rom", ""),
-            import_error: string("importError", ""),
-            players: item.get("players").and_then(Value::as_u64).unwrap_or(1) as u32,
-            simultaneous: item
-                .get("simultaneous")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            firmware_required: item
-                .get("firmwareRequired")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            id,
-        });
-    }
-    if games.is_empty() {
-        return Err("Empty game catalog".into());
-    }
-    Ok(games)
+        catalog::DecodeError::Catalog(error) => error,
+    })
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
+    let bytes = read_json_bytes(path)?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("Invalid JSON {}: {e}", path.display()))
+}
+
+fn read_json_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let metadata =
         fs::symlink_metadata(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.len() > 32 * 1024 * 1024 {
+    if !metadata.file_type().is_file() || metadata.len() > catalog::MAX_JSON_BYTES as u64 {
         return Err(format!("Invalid JSON file: {}", path.display()));
     }
-    let bytes = fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("Invalid JSON {}: {e}", path.display()))
+    let file = File::open(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(catalog::MAX_JSON_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    if bytes.len() > catalog::MAX_JSON_BYTES {
+        return Err(format!("Invalid JSON file: {}", path.display()));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod catalog_read_tests {
+    use super::read_json_bytes;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "clover-catalog-read-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn bounded_json_reader_accepts_regular_files_and_rejects_missing_symlink_and_oversized() {
+        let directory = temp_dir();
+        let regular = directory.join("catalog.json");
+        fs::write(&regular, b"{}\n").unwrap();
+        assert_eq!(read_json_bytes(&regular).unwrap(), b"{}\n");
+
+        let missing = directory.join("missing.json");
+        assert!(
+            read_json_bytes(&missing)
+                .unwrap_err()
+                .starts_with("Cannot read ")
+        );
+
+        #[cfg(unix)]
+        {
+            let link = directory.join("link.json");
+            std::os::unix::fs::symlink(&regular, &link).unwrap();
+            assert_eq!(
+                read_json_bytes(&link).unwrap_err(),
+                format!("Invalid JSON file: {}", link.display())
+            );
+        }
+
+        let oversized = directory.join("oversized.json");
+        let file = fs::File::create(&oversized).unwrap();
+        file.set_len(crate::frontend::catalog::MAX_JSON_BYTES as u64 + 1)
+            .unwrap();
+        assert_eq!(
+            read_json_bytes(&oversized).unwrap_err(),
+            format!("Invalid JSON file: {}", oversized.display())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn atomic_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -3092,6 +2819,66 @@ fn atomic_json(path: &Path, value: &Value) -> Result<(), String> {
         fs::rename(path, backup).map_err(|e| format!("Cannot preserve previous settings: {e}"))?;
     }
     fs::rename(&temporary, path).map_err(|e| format!("Cannot publish settings: {e}"))
+}
+
+fn save_preference_document(
+    path: &Path,
+    existing: &mut Value,
+    snapshot: &crate::frontend::preferences::MenuSnapshot,
+) -> Result<(), String> {
+    let merged = crate::frontend::preferences::merge_snapshot(existing, snapshot)?;
+    atomic_json(path, &merged)?;
+    *existing = merged;
+    Ok(())
+}
+
+#[cfg(test)]
+mod preference_save_tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "clover-preferences-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn preference_write_succeeds_before_memory_update() {
+        let dir = temp_dir();
+        let path = dir.join("preferences.json");
+        let snapshot = crate::frontend::preferences::MenuSnapshot {
+            selected: "game".into(),
+            sort: 1,
+            slot: 2,
+            sound: true,
+            motion: false,
+            language: "en".into(),
+            firmware: "/firmware".into(),
+        };
+        let mut existing = json!({"history":{"game":1}});
+        save_preference_document(&path, &mut existing, &snapshot).unwrap();
+        assert_eq!(read_json(&path).unwrap(), existing);
+        let blocked = dir.join("regular-file");
+        fs::write(&blocked, b"block").unwrap();
+        let mut failed_doc = json!({"extension":true});
+        assert!(
+            save_preference_document(
+                &blocked.join("preferences.json"),
+                &mut failed_doc,
+                &snapshot
+            )
+            .is_err()
+        );
+        assert_eq!(failed_doc, json!({"extension":true}));
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn chrono_now() -> i64 {
@@ -3241,7 +3028,25 @@ pub fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
     if frame_limit != 0 {
         if let Some(panel) = preview_panel {
-            if panel == "resume" {
+            if let Some((view, message)) = match panel.as_str() {
+                "import-running" => Some((
+                    launcher::import_worker::CancellationView::Available,
+                    "Importing image... You may continue browsing.",
+                )),
+                "import-requested" => Some((
+                    launcher::import_worker::CancellationView::Requested,
+                    "Cancellation requested; waiting for a safe stopping point...",
+                )),
+                "import-finishing" => Some((
+                    launcher::import_worker::CancellationView::Finishing,
+                    "Finishing import; cancellation is too late.",
+                )),
+                _ => None,
+            } {
+                app.panel = "message".into();
+                app.message = message.into();
+                app.preview_import_notice = Some(view);
+            } else if panel == "resume" {
                 app.open_suspend();
             } else if panel.starts_with("toolbar:")
                 || matches!(panel.as_str(), "settings" | "emulator-settings" | "help")
@@ -3332,8 +3137,25 @@ pub fn smoke_test() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::required_firmware_available;
+    use super::{import_footer, required_firmware_available};
+    use crate::ui::launcher::import_worker::CancellationView;
     use std::fs;
+
+    #[test]
+    fn import_footer_labels_and_actions_match_enabled_state() {
+        assert_eq!(
+            import_footer(CancellationView::Available),
+            ("Cancel import", Some("cancel-import"))
+        );
+        assert_eq!(
+            import_footer(CancellationView::Requested),
+            ("Cancelling…", None)
+        );
+        assert_eq!(
+            import_footer(CancellationView::Finishing),
+            ("Finishing import…", None)
+        );
+    }
 
     #[test]
     fn missing_coprocessor_firmware_fails_closed() {

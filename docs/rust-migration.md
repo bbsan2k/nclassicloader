@@ -1,5 +1,10 @@
 # Rust migration status
 
+The language migration described here is distinct from the ongoing
+[frontend architecture split](frontend-architecture.md). See the
+[agent-sized task queue](frontend-tasks.md) for the incremental host/service
+separation; moving code to Rust did not itself implement mobile or web apps.
+
 The non-emulation application has been ported to Rust. The shipped frontend,
 image/profile importer, menu logic, and settings are Rust; the ares execution
 cores remain C++ behind the C ABI. The former C++ frontend and importer have

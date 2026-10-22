@@ -1,86 +1,54 @@
 //! Stick hysteresis and bounded directional menu repeat. Gameplay buttons stay
 //! in the existing SNES-layout mask, shared by both emulation cores.
 use super::*;
+use crate::frontend::menu_input::Key;
 use std::time::Duration;
 
 #[derive(Default)]
-pub(super) struct Stick {
-    axes: [i8; 2],
-}
+pub(super) struct Stick(crate::frontend::gamepad::Stick);
 
 impl Stick {
     pub(super) fn update(&mut self, axis: usize, value: i16) {
-        if let Some(current) = self.axes.get_mut(axis) {
-            *current = direction(*current, value);
-        }
+        self.0.update(axis, value);
     }
     pub(super) fn mask(&self) -> u16 {
-        (match self.axes[0] {
-            -1 => 1 << 6,
-            1 => 1 << 7,
-            _ => 0,
-        }) | (match self.axes[1] {
-            -1 => 1 << 4,
-            1 => 1 << 5,
-            _ => 0,
-        })
+        self.0.mask()
     }
-    pub(super) fn menu_key(&self) -> Option<Scancode> {
-        match self.axes {
-            [_, -1] => Some(Scancode::Up),
-            [_, 1] => Some(Scancode::Down),
-            [-1, _] => Some(Scancode::Left),
-            [1, _] => Some(Scancode::Right),
-            _ => None,
+    pub(super) fn menu_key(&self) -> Option<Key> {
+        match self.0.menu_direction() {
+            Some(crate::frontend::gamepad::Direction::Up) => Some(Key::Up),
+            Some(crate::frontend::gamepad::Direction::Down) => Some(Key::Down),
+            Some(crate::frontend::gamepad::Direction::Left) => Some(Key::Left),
+            Some(crate::frontend::gamepad::Direction::Right) => Some(Key::Right),
+            None => None,
         }
     }
     pub(super) fn clear(&mut self) {
-        self.axes = [0; 2];
-    }
-}
-
-fn direction(current: i8, value: i16) -> i8 {
-    if value >= 16000 {
-        1
-    } else if value <= -16000 {
-        -1
-    } else if current == 1 && value > 10000 {
-        1
-    } else if current == -1 && value < -10000 {
-        -1
-    } else {
-        0
+        self.0.clear();
     }
 }
 
 #[derive(Default)]
 pub(super) struct Repeat {
-    key: Option<Scancode>,
-    due: Option<Instant>,
+    policy: crate::frontend::gamepad::Repeat<Key>,
+    origin: Option<Instant>,
 }
 
 impl Repeat {
-    pub(super) fn pressed(&mut self, key: Scancode, now: Instant) {
-        self.key = Some(key);
-        self.due = Some(now + Duration::from_millis(350));
+    pub(super) fn pressed(&mut self, key: Key, now: Instant) {
+        let elapsed = self.elapsed(now);
+        self.policy.pressed(key, elapsed);
     }
-    pub(super) fn poll(&mut self, key: Option<Scancode>, now: Instant) -> Option<(Scancode, bool)> {
-        if key != self.key {
-            self.key = key;
-            self.due = key.map(|_| now + Duration::from_millis(350));
-            return key.map(|key| (key, false));
-        }
-        if let (Some(key), Some(due)) = (key, self.due)
-            && now >= due
-        {
-            self.due = Some(now + Duration::from_millis(110));
-            return Some((key, true));
-        }
-        None
+    pub(super) fn poll(&mut self, key: Option<Key>, now: Instant) -> Option<(Key, bool)> {
+        let elapsed = self.elapsed(now);
+        self.policy.poll(key, elapsed)
     }
     pub(super) fn clear(&mut self) {
-        self.key = None;
-        self.due = None;
+        self.policy.clear();
+    }
+    fn elapsed(&mut self, now: Instant) -> Duration {
+        let origin = *self.origin.get_or_insert(now);
+        now.saturating_duration_since(origin)
     }
 }
 
@@ -88,33 +56,86 @@ impl Repeat {
 mod tests {
     use super::*;
     #[test]
-    fn stick_has_deadzone_hysteresis_and_diagonal_gameplay() {
-        let mut stick = Stick::default();
-        stick.update(0, 15000);
-        assert_eq!(stick.mask(), 0);
-        stick.update(0, 20000);
-        stick.update(0, 12000);
-        assert_eq!(stick.mask(), 1 << 7);
-        stick.update(1, -22000);
-        assert_eq!(stick.mask(), (1 << 7) | (1 << 4));
-        stick.update(0, 9000);
-        assert_eq!(stick.mask(), 1 << 4);
-        stick.clear();
-        assert_eq!(stick.mask(), 0);
-    }
-    #[test]
     fn repeat_is_delayed_bounded_and_released() {
         let mut repeat = Repeat::default();
         let now = Instant::now();
-        let key = Some(Scancode::Right);
-        assert_eq!(repeat.poll(key, now), Some((Scancode::Right, false)));
+        let key = Some(Key::Right);
+        assert_eq!(repeat.poll(key, now), Some((Key::Right, false)));
         assert_eq!(repeat.poll(key, now + Duration::from_millis(100)), None);
         assert_eq!(
             repeat.poll(key, now + Duration::from_secs(3)),
-            Some((Scancode::Right, true))
+            Some((Key::Right, true))
         );
         assert_eq!(repeat.poll(key, now + Duration::from_secs(3)), None);
         repeat.clear();
         assert_eq!(repeat.poll(None, now), None);
+    }
+
+    #[test]
+    fn repeat_adapter_uses_a_stable_elapsed_origin() {
+        let mut repeat = Repeat::default();
+        let origin = Instant::now();
+        assert_eq!(
+            repeat.poll(Some(Key::Right), origin),
+            Some((Key::Right, false))
+        );
+        assert_eq!(
+            repeat.poll(Some(Key::Right), origin + Duration::from_millis(349)),
+            None
+        );
+        assert_eq!(
+            repeat.poll(Some(Key::Right), origin + Duration::from_millis(350)),
+            Some((Key::Right, true))
+        );
+        repeat.clear();
+        assert_eq!(
+            repeat.poll(Some(Key::Right), origin + Duration::from_millis(351)),
+            Some((Key::Right, false))
+        );
+    }
+
+    #[test]
+    fn repeat_adapter_matches_legacy_instant_policy_on_monotonic_trace() {
+        let origin = Instant::now();
+        let mut adapter = Repeat::default();
+        let mut legacy_key = None;
+        let mut legacy_due = None;
+        for (key, millis) in [
+            (Some(Key::Right), 0),
+            (Some(Key::Right), 349),
+            (Some(Key::Right), 350),
+            (Some(Key::Right), 500),
+            (Some(Key::Left), 501),
+            (Some(Key::Left), 900),
+            (None, 901),
+            (Some(Key::Left), 902),
+            (Some(Key::Left), 5_000),
+        ] {
+            let now = origin + Duration::from_millis(millis);
+            let actual = adapter.poll(key, now);
+            let expected = if key != legacy_key {
+                legacy_key = key;
+                legacy_due = key.map(|_| now + Duration::from_millis(350));
+                key.map(|key| (key, false))
+            } else if let (Some(key), Some(due)) = (key, legacy_due)
+                && now >= due
+            {
+                legacy_due = Some(now + Duration::from_millis(110));
+                Some((key, true))
+            } else {
+                None
+            };
+            assert_eq!(actual, expected);
+        }
+
+        let pressed_at = origin + Duration::from_millis(5_001);
+        adapter.pressed(Key::Down, pressed_at);
+        assert_eq!(adapter.poll(Some(Key::Down), pressed_at), None);
+        adapter.clear();
+        let after_clear = origin + Duration::from_millis(5_002);
+        assert_eq!(
+            adapter.poll(Some(Key::Up), after_clear),
+            Some((Key::Up, false))
+        );
     }
 }

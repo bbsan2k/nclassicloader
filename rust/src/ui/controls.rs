@@ -1,163 +1,141 @@
 //! Shared keyboard/gamepad navigation. A loaded-but-paused core is not gameplay.
+use super::input;
 use super::*;
+use crate::frontend::{
+    menu_input::{KeyEvent, suspend_input},
+    menu_navigation as navigation,
+};
 
 impl App {
     pub(super) fn handle_key(&mut self, code: Scancode, repeat: bool, canvas: &Canvas<Window>) {
-        if code == Scancode::F11 {
-            if !repeat {
-                self.activate("fullscreen", canvas);
-            }
-            return;
+        self.handle_menu_input(input::native_event(code, repeat), canvas);
+    }
+
+    pub(super) fn handle_menu_input(&mut self, event: KeyEvent, canvas: &Canvas<Window>) {
+        let panel = if self.panel.is_empty() {
+            navigation::Panel::None
+        } else if self.panel == "resume" {
+            navigation::Panel::Resume
+        } else if self.toolbar_page().is_some() {
+            navigation::Panel::Toolbar
+        } else if self.panel == "confirm-overwrite" {
+            navigation::Panel::ConfirmOverwrite
+        } else if self.panel == "confirm-delete" {
+            navigation::Panel::ConfirmDelete
+        } else if self.panel.starts_with("confirm-") {
+            navigation::Panel::ConfirmOther
+        } else if self.panel == "emulator-settings" {
+            navigation::Panel::EmulatorSettings
+        } else if self.panel == "help" {
+            navigation::Panel::Help
+        } else {
+            navigation::Panel::Other
+        };
+        let state = navigation::State {
+            menu_focus: self.menu_focus,
+            focus: self.focus,
+            toolbar_index: self.toolbar_index,
+        };
+        let context = navigation::Context {
+            playing: self.playing,
+            owned_import_notice: self.owned_import_notice(),
+            panel,
+            action_count: self.actions.len(),
+        };
+        let plan = navigation::transition(state, context, event);
+        self.menu_focus = plan.state.menu_focus;
+        self.focus = plan.state.focus;
+        self.toolbar_index = plan.state.toolbar_index;
+        if plan.clear_hover {
+            self.hover.clear();
         }
-        if self.playing {
-            match code {
-                Scancode::Escape if !repeat => self.leave_game(),
-                Scancode::F5 if !repeat => self.save_slot(),
-                Scancode::F8 if !repeat => self.resume_slot(canvas),
-                _ => {}
-            }
+        let Some(effect) = plan.effect else {
             return;
-        }
-        self.hover.clear();
-        if code == Scancode::F2 && !repeat {
-            self.activate("profiles", canvas);
-            return;
-        }
-        if self.panel == "resume" {
-            match code {
-                Scancode::Escape | Scancode::Up if !self.suspend_controls => {
-                    self.panel.clear();
-                    self.menu_focus = MenuFocus::Games;
-                }
-                Scancode::Escape => {
-                    self.panel.clear();
-                    self.menu_focus = MenuFocus::Games;
-                }
-                Scancode::Up => self.suspend_controls = false,
-                Scancode::Down | Scancode::Tab => {
-                    self.suspend_controls = true;
-                    self.focus = 0;
-                }
-                Scancode::Left | Scancode::Right => {
-                    let direction = if code == Scancode::Left { -1 } else { 1 };
-                    if self.suspend_controls {
-                        self.focus = (self.focus as i32 + direction).rem_euclid(5) as usize;
-                    } else {
-                        self.slot = (self.slot as i32 + direction).rem_euclid(4) as usize;
-                        let _ = self.save_settings();
-                    }
-                }
-                Scancode::Return if !repeat => {
-                    if self.suspend_controls {
-                        let action = if self.art.nes && self.focus == 0 {
-                            "choose-suspend"
-                        } else {
-                            ["save", "resume", "lock", "delete", "close"][self.focus.min(4)]
-                        };
-                        self.activate(action, canvas);
-                    } else if self.has_pending() {
-                        self.request_suspend_save();
-                    } else {
-                        self.resume_slot(canvas);
-                    }
-                }
-                Scancode::S if !repeat => self.request_suspend_save(),
-                Scancode::R if !repeat => self.resume_slot(canvas),
-                Scancode::C if !repeat => self.resume_pending(canvas),
-                Scancode::X if !repeat => self.toggle_suspend_lock(),
-                Scancode::Delete if !repeat => self.request_suspend_delete(),
-                _ => {}
+        };
+        match effect {
+            navigation::Effect::Fullscreen => self.activate("fullscreen", canvas),
+            navigation::Effect::LeaveGame => self.leave_game(),
+            navigation::Effect::SaveSlot => self.save_slot(),
+            navigation::Effect::LoadSlot => self.resume_slot(canvas),
+            navigation::Effect::CancelImport => self.request_import_cancel(),
+            navigation::Effect::OpenProfiles => self.activate("profiles", canvas),
+            navigation::Effect::DelegateSuspend => self.handle_suspend_input(event, canvas),
+            navigation::Effect::DelegateToolbar => {
+                let _ = self.toolbar_key(event, canvas);
             }
-            return;
-        }
-        if self.toolbar_key(code, repeat, canvas) {
-            return;
-        }
-        if !self.panel.is_empty() {
-            if self.panel == "confirm-overwrite" || self.panel == "confirm-delete" {
-                match code {
-                    Scancode::Escape => {
-                        self.confirm_target = None;
-                        self.open_suspend();
-                    }
-                    Scancode::Left
-                    | Scancode::Right
-                    | Scancode::Up
-                    | Scancode::Down
-                    | Scancode::Tab => self.focus = (self.focus + 1) % 2,
-                    Scancode::Return if !repeat => {
-                        let action = if self.focus == 0 {
-                            "cancel-suspend"
-                        } else if self.panel == "confirm-delete" {
-                            "confirm-delete"
-                        } else {
-                            "confirm-save"
-                        };
-                        self.activate(action, canvas);
-                    }
-                    _ => {}
+            navigation::Effect::CancelConfirmationAndOpenSuspend => {
+                self.confirm_target = None;
+                self.open_suspend();
+            }
+            navigation::Effect::CancelSuspend => self.activate("cancel-suspend", canvas),
+            navigation::Effect::ConfirmDelete => self.activate("confirm-delete", canvas),
+            navigation::Effect::ConfirmSave => self.activate("confirm-save", canvas),
+            navigation::Effect::SetSettingsPanel => {
+                self.panel = "settings".into();
+                self.focus = 0;
+            }
+            navigation::Effect::SetHelpToolbarPanel => {
+                self.panel = "toolbar:4".into();
+                self.focus = 0;
+            }
+            navigation::Effect::ClosePanel => self.panel.clear(),
+            navigation::Effect::ActivateFocused(index) => {
+                if let Some(action) = self.actions.get(index).cloned() {
+                    self.activate(&action, canvas);
                 }
-                return;
             }
-            match code {
-                Scancode::Escape => {
-                    if self.panel.starts_with("confirm-") {
-                        self.confirm_target = None;
-                        self.open_suspend();
-                    } else if self.panel == "emulator-settings" {
-                        self.panel = "settings".into();
-                        self.focus = 0;
-                    } else if self.panel == "help" {
-                        self.panel = "toolbar:4".into();
-                        self.focus = 0;
-                    } else {
-                        self.panel.clear();
-                    }
-                }
-                Scancode::Return if !repeat => {
-                    if let Some(action) = self.actions.get(self.focus).cloned() {
-                        self.activate(&action, canvas);
-                    }
-                }
-                Scancode::Left
-                | Scancode::Right
-                | Scancode::Up
-                | Scancode::Down
-                | Scancode::Tab => {
-                    let count = self.actions.len().max(1);
-                    self.focus = if matches!(code, Scancode::Up | Scancode::Left) {
-                        (self.focus + count - 1) % count
-                    } else {
-                        (self.focus + 1) % count
-                    };
-                }
-                _ => {}
+            navigation::Effect::OpenToolbar(index) => {
+                self.activate(&format!("toolbar:{index}"), canvas)
             }
-            return;
-        }
-        match (self.menu_focus, code) {
-            (MenuFocus::Games, Scancode::Up) => self.menu_focus = MenuFocus::Toolbar,
-            (MenuFocus::Toolbar, Scancode::Down | Scancode::Escape) => {
-                self.menu_focus = MenuFocus::Games
-            }
-            (MenuFocus::Toolbar, Scancode::Left) => {
-                self.toolbar_index = (self.toolbar_index + 4) % 5
-            }
-            (MenuFocus::Toolbar, Scancode::Right) => {
-                self.toolbar_index = (self.toolbar_index + 1) % 5
-            }
-            (MenuFocus::Toolbar, Scancode::Return) if !repeat => {
-                self.activate(&format!("toolbar:{}", self.toolbar_index), canvas)
-            }
-            (MenuFocus::Games, Scancode::Down) => self.open_suspend(),
-            (MenuFocus::Games, Scancode::Left) => self.move_selection(-1),
-            (MenuFocus::Games, Scancode::Right) => self.move_selection(1),
-            (MenuFocus::Games, Scancode::Return) if !repeat => {
+            navigation::Effect::OpenSuspend => self.open_suspend(),
+            navigation::Effect::MoveGame(direction) => self.move_selection(direction),
+            navigation::Effect::BeginGame => {
                 self.begin_game(canvas);
             }
-            (_, Scancode::Tab) if !repeat => self.activate("sort", canvas),
-            (_, Scancode::M) if !repeat => self.activate("sound", canvas),
-            _ => {}
+            navigation::Effect::Sort => self.activate("sort", canvas),
+            navigation::Effect::ToggleSound => self.activate("sound", canvas),
+        }
+    }
+
+    fn handle_suspend_input(&mut self, event: KeyEvent, canvas: &Canvas<Window>) {
+        use crate::frontend::suspend_navigation::{Effect, State, transition};
+        let pending = event.key == crate::frontend::menu_input::Key::Confirm
+            && !event.repeat
+            && !self.suspend_controls
+            && self.has_pending();
+        let input = suspend_input(event, pending, self.suspend_controls, self.art.nes);
+        let (state, effects) = transition(
+            State {
+                slot: self.slot,
+                focus: self.focus,
+                controls: self.suspend_controls,
+            },
+            input,
+        );
+        self.slot = state.slot;
+        self.focus = state.focus;
+        self.suspend_controls = state.controls;
+        for effect in effects {
+            match effect {
+                Effect::SaveSettings => {
+                    let _ = self.save_settings();
+                }
+                Effect::Dismiss => {
+                    self.panel.clear();
+                    self.menu_focus = MenuFocus::Games;
+                }
+                Effect::ActivateSave => self.activate("save", canvas),
+                Effect::ActivateResume => self.activate("resume", canvas),
+                Effect::ActivateLock => self.activate("lock", canvas),
+                Effect::ActivateDelete => self.activate("delete", canvas),
+                Effect::ActivateClose => self.activate("close", canvas),
+                Effect::ActivateChooseSuspend => self.activate("choose-suspend", canvas),
+                Effect::RequestSave => self.request_suspend_save(),
+                Effect::ResumeSlot => self.resume_slot(canvas),
+                Effect::ResumePending => self.resume_pending(canvas),
+                Effect::ToggleLock => self.toggle_suspend_lock(),
+                Effect::RequestDelete => self.request_suspend_delete(),
+            }
         }
     }
 }
