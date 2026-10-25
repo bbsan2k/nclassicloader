@@ -7,33 +7,7 @@ use sdl3::{
     video::WindowContext,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Region {
-    Japan,
-    Europe,
-    Usa,
-    Unknown,
-}
-
-impl Region {
-    pub(super) fn from_marker(marker: &str) -> Self {
-        match marker {
-            "JPN" | "Japan" => Self::Japan,
-            "EUR" | "Europe" => Self::Europe,
-            "USA" => Self::Usa,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Japan => "Japan",
-            Self::Europe => "Europe",
-            Self::Usa => "United States",
-            Self::Unknown => "Unknown",
-        }
-    }
-}
+pub(super) use crate::frontend::launcher_scene::Region;
 
 pub(super) struct Assets {
     japan: Texture,
@@ -50,8 +24,7 @@ impl Assets {
         })
     }
 
-    pub(super) fn draw(&self, canvas: &mut Canvas<Window>, marker: &str, rect: FRect) {
-        let region = Region::from_marker(marker);
+    pub(super) fn draw(&self, canvas: &mut Canvas<Window>, region: Region, rect: FRect) {
         fill(
             canvas,
             FRect::new(rect.x - 1.0, rect.y - 1.0, rect.w + 2.0, rect.h + 2.0),

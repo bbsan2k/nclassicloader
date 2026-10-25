@@ -619,34 +619,13 @@ pub(super) fn select(home: &Path, preview: Option<&Path>) -> Result<Option<Selec
 
 // Kept in the launcher so click handling matches the compact tabs drawn by the view.
 const FILTER_TABS: [FRect; 3] = [
-    FRect {
-        x: 272.0,
-        y: 146.0,
-        w: 72.0,
-        h: 30.0,
-    },
-    FRect {
-        x: 350.0,
-        y: 146.0,
-        w: 72.0,
-        h: 30.0,
-    },
-    FRect {
-        x: 428.0,
-        y: 146.0,
-        w: 72.0,
-        h: 30.0,
-    },
+    view::sdl_rect(crate::frontend::launcher_scene::FILTER_TABS[0]),
+    view::sdl_rect(crate::frontend::launcher_scene::FILTER_TABS[1]),
+    view::sdl_rect(crate::frontend::launcher_scene::FILTER_TABS[2]),
 ];
 
 fn coordinates(width: u32, height: u32, x: f32, y: f32) -> (f32, f32) {
-    let scale = (width as f32 / view::WIDTH as f32)
-        .min(height as f32 / view::HEIGHT as f32)
-        .max(0.001);
-    (
-        (x - (width as f32 - view::WIDTH as f32 * scale) * 0.5) / scale,
-        (y - (height as f32 - view::HEIGHT as f32 * scale) * 0.5) / scale,
-    )
+    crate::frontend::launcher_scene::coordinates(width, height, x, y)
 }
 
 #[cfg(test)]

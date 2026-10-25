@@ -1,6 +1,15 @@
 //! Host-neutral launcher service activity policy, not a complete frame/update model.
 use crate::frontend::import_lifecycle::CancelResult;
 
+/// Presentation snapshot, not action authority or cancellation acknowledgment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancellationView {
+    Unavailable,
+    Available,
+    Requested,
+    Finishing,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImportOutcome {
     Succeeded,

@@ -7,7 +7,446 @@ keep each task independently testable and revertible.
 
 ## Current evidence
 
-### Latest checkpoint — 2026-10-22
+### Latest checkpoint — 2026-10-25 (L21ao–ax, ten chunks)
+
+Ten chunks extract the generic modal panel (`render_panel`): **L21ao** row
+viewport policy; **L21ap** bound row commands; **L21aq** footer commands;
+**L21ar** heading/body capture; **L21as** owned panel composition and native
+execution; **L21at** read-only native projection; **L21au** external whole-panel
+tests; **L21av** native key-binding tests; **L21aw** executor fault tests;
+**L21ax** retained panel resource replay. Luna implemented the first six slices;
+Sol completed the last four directly at the user's request, reviewed the
+projection and fixed a row-position regression before final verification.
+
+Panel execution validates scene/context/current-assets generations before any
+pixel, hit or keyboard-action replacement. Native bindings accept captured keys
+only from the projected panel's allowed set; keys are never catalog indices.
+Visible rows provide hits while all entries retain their original keyboard-action
+order, followed by an enabled footer. Disabled import footers still draw but
+have no hit or action. Profile/language enumeration, wrapping, translations,
+focus mutation, cancellation eligibility and effects remain native. Native SDL
+dialog rasterization and suspend/toolbar-specific resources remain unchanged.
+
+Verification: **178 default / 177 portable / 290 native unit tests and 137
+integration tests per configuration** pass. Formatting, diff checks and warnings-
+denied portable/native Clippy pass. All **nine** opt-in SDL resource tests pass
+with caller-supplied dummy video/software drivers. New tests verify panel
+ordering/ownership, stable keys, scrolled keyboard actions, native allow-list
+binding, owner rejection before replacement and fresh-assets/canvas replay.
+The replay uses the production row-projection helper and asserts distinct row
+positions, covering the regression found during review; message, scrolled-list,
+enabled-footer and disabled-footer cases retain identical pixels/hits/actions
+after resource recreation. This is synthetic software-SDL evidence, not GPU
+context-loss or native font/driver failure certification.
+
+All **132 UI/language snapshots** (50 SNES, 48 NES, 34 Famicom) match fresh
+pre-L21ao baselines outside the elapsed launcher busy strip; 18 representative
+snapshots also match after every production slice and final review. Three-system
+real-core suspend/save/lock/overwrite/delete/replay/restart/navigation checks
+pass. Release SNES/NES dummy-audio checks pass at 50/60/120 Hz with no queue
+underruns. Logs and artifacts are under `.build/l21ao*` and `.build/l21ax-after`.
+Importer fault matrices and physical-device/runtime gates were not rerun. Nothing
+was committed or pushed.
+
+**Next:** distinct toolbar-panel and suspend/confirmation presentation, followed
+by App target-pass contracts. Continue direct Sol work unless redirected.
+**L21 remains partial**; L22, S07, L25, Checkpoint C and Apple/browser runtime
+gates remain separate.
+
+### Previous checkpoint — 2026-10-24 (L21ae–an, ten chunks)
+
+Ten serial Luna chunks extend owned composition through the toolbar and overlay
+boundary: **L21ae** toolbar layout/focus policy; **L21af** tooltip commands;
+**L21ag** bound toolbar scenes and closed hit tags; **L21ah** native read-only
+toolbar projection; **L21ai** combined base/toolbar composition; **L21aj** closed
+overlay routing; **L21ak** owned notice presentation; **L21al** external
+composition/ownership tests; **L21am** native toolbar/notice executor faults;
+**L21an** retained combined-menu, tooltip and notice replay.
+
+Base and toolbar generations must agree before merging, then the existing native
+executor checks the combined scene/context/assets owner before any draw or hit
+append. Per-item active/icon/hit/tooltip order, simultaneous hover and keyboard
+tooltips, open-panel suppression and exact legacy focus strings are preserved.
+Toolbar hit tags bind only the five existing native actions. Notice glyphs and
+dialog geometry are owned data with an owner check before drawing; dialog fill
+and three SDL rectangle outlines retain their original native rasterization.
+Overlay routing preserves native dispatch order and hit/action clearing behavior;
+it does not extract suspend or toolbar-panel payloads or authorize effects.
+
+Verification: **178 default / 177 portable / 288 native unit tests and 121
+integration tests per configuration** pass. Formatting, diff checks and warnings-
+denied portable/native Clippy pass. All **seven** opt-in SDL resource tests pass
+when explicitly invoked with dummy video/software rendering. New tests exercise
+closed toolbar hit mappings, whole-scene/context rejection, missing/stale
+individual resources, notice rejection before native dialog drawing, warm replay
+and fresh-owner pixel/hit parity. Sol strengthened actual mixed-generation,
+missing-resource execution, two-tooltip and retained-command assertions.
+
+Each production chunk and the final batch preserve the 18 representative
+snapshots. All **132 UI/language snapshots** (50 SNES, 48 NES, 34 Famicom) match
+fresh pre-L21ae baselines outside the elapsed launcher busy strip. Three additional
+notice snapshots match exactly across the extraction. Three-system real-core
+suspend/save/lock/overwrite/delete/replay/restart/navigation tests pass. Release
+SNES/NES dummy-audio checks pass at 50/60/120 Hz with no queue underruns. Logs and
+artifacts are under `.build/l21ae*`, `.build/l21ak-notice-*` and
+`.build/l21an-after`. Software-SDL/headless checks do not certify physical GPUs,
+audio hardware, general context-loss recovery or Apple/browser runtime. Importer
+fault matrices were not rerun; nothing was committed or pushed.
+
+**Next:** extract remaining modal/toolbar-panel presentation in small slices,
+preserving native action binding, hit replacement and suspend target ownership.
+**L21 remains partial:** full overlay payloads and App target-pass contracts,
+L22, S07, L25, Checkpoint C and Apple/browser runtime gates remain separate.
+
+### Previous checkpoint — 2026-10-24 (L21u–ad, ten chunks)
+
+Ten serial Luna chunks complete the base-menu boundary: **L21u** bound
+thumbnails; **L21v** bound four-item HUD; **L21w** menu bars; **L21x** owned
+ordered base-frame composition; **L21y** native generation-checked execution
+and current-catalog hit binding; **L21z** read-only native projection;
+**L21aa** external frame tests; **L21ab** actual executor fault tests;
+**L21ac** complete-frame native resource replay; **L21ad** shared reverse-
+priority, half-open hit selection used by native hover and click handling.
+
+The base frame ends before toolbar/tooltips and modal overlays. Game hits retain
+captured keys, never catalog indices; native binding ignores absent keys. Frame,
+binding-context and current-assets generations must agree before any draw or
+hit append, including fills. Individual invalid textures still skip only their
+draws. Firmware/ROM checks retain candidate order before culling; thumbnails
+retain their separate firmware-only guard. Clocks, activation, double-click game
+start, stage targets and emulator/audio ownership remain native. Projection and
+composition allocate; this is not a new frame-budget or atomic-filesystem claim.
+
+Verification: **178 default / 177 portable / 288 native unit tests and 109
+integration tests per configuration** pass. Formatting, diff checks and warnings-
+denied portable/native Clippy pass. All **five** opt-in SDL resource tests pass
+when explicitly invoked with caller-supplied dummy video/software drivers. New
+executor tests verify rejection before pixel/hit mutation; full-frame replay
+matches pixels and native hit bindings after warm replay and assets/canvas
+recreation for normal, suspend and NES cases. These synthetic software-SDL tests
+do not certify arbitrary GPU context loss, physical devices or driver failures.
+
+Production composition/executor/projection changes and the final batch preserve
+18 representative snapshots. All **132 UI/language snapshots** (50 SNES, 48 NES,
+34 Famicom) match fresh pre-L21u baselines outside the elapsed launcher busy
+strip. Three-system real-core suspend/save/lock/overwrite/delete/replay/restart/
+navigation checks pass. Release SNES/NES dummy-audio checks pass at 50/60/120 Hz
+with no queue underruns; physical audio and earlier debug timing caveats remain.
+Logs and artifacts are under `.build/l21uad-*`; importer fault matrices were not
+rerun for this presentation-only batch. Nothing was committed or pushed.
+
+**Next:** extend owned composition to toolbar/tooltips and modal overlays, then
+address complete App target-pass contracts. **L21 remains partial**; L22, S07,
+L25, Checkpoint C and Apple/browser runtime gates remain separate.
+
+### Previous checkpoint — 2026-10-24 (L21k–t, ten chunks)
+
+Ten serial Luna chunks extend App carousel/title scene output, with independent
+Sol review and verification after each: **L21k** native current-owner atlas/image
+source snapshots; **L21l** shared owned bitmap-glyph command capture; **L21m**
+injected-time menu motion policy; **L21n** card layout/style planning; **L21o**
+typed card command/hit geometry output; **L21p** typed title scene; **L21q** typed
+arrows with closed Previous/Next hit tags; **L21r** bound selection scenes;
+**L21s** external mixed-scene/ownership/resource tests; **L21t** actual dummy-SDL
+retained carousel/title replay. Sol strengthened the fake-host ownership/current-
+generation assertions and required native fresh-owner replay for all three
+normal/suspend/NES cases, not just the normal case.
+
+Native code still performs candidate iteration, game-ID lookup, firmware/ROM
+checks before x-culling, normalized save/lock projection, current resource lookup
+and hit-action binding. Shared output retains only plain geometry/style data and
+generation-bound IDs; missing resources skip their draws without inventing a
+fallback or deleting hit geometry. Scenes never rebind stale IDs. All actual
+launch/save/delete eligibility, stage/target ownership, translation and native
+resource destruction remain unchanged. Menu motion receives elapsed seconds,
+not clocks or emulator/audio owners. Command building allocates and is not a
+new whole-frame memory/responsiveness guarantee.
+
+Verification: **178 default / 177 portable / 287 native unit tests and 99
+integration tests each** pass; formatting and warnings-denied portable/native
+Clippy pass. All three ignored native SDL resource tests pass when explicitly
+run with dummy video/software rendering. The new synthetic scene test exercises
+real atlas/cover/font capture and copies, warm replay, old-ID rejection after
+assets/canvas destruction and identical fresh-owner pixels for normal, suspend
+and NES scenes. Native font/driver error injection, arbitrary context-loss
+recovery and physical GPU performance are not implied.
+
+Every production chunk kept **18 representative SNES/NES/Famicom snapshots**
+pixel-identical. Final UI/language tests passed for **132 snapshots** (50 SNES,
+48 NES, 34 Famicom), matching freshly built pre-L21k baselines outside the
+elapsed-time launcher busy strip. Real-core suspend/save/lock/overwrite/delete/
+replay/restart/navigation checks pass for all three systems with disposable save
+data. Release SNES/NES dummy-audio checks pass at 50/60/120 Hz presentation with
+no queue underruns. This is release/headless buffering evidence, not physical
+audio/controller/display certification; earlier debug timing limitations remain
+recorded below. Local-image importer fault matrices were not rerun for this
+rendering-only batch. Artifacts/logs remain untracked under `.build/l21k*`.
+
+**Next: L21u**, bind HUD/thumbnail command groups and project/compose the remaining
+menu-frame display data, preserving current native hit bindings and pass order.
+**L21 is still partial:** complete App scenes/target-pass gates, L22, S07, L25,
+Checkpoint C and Apple/browser runtime gates remain separate.
+
+### Previous checkpoint — 2026-10-24 (L21a–j, ten chunks)
+
+Ten serial Luna chunks were independently reviewed and verified after each:
+**L21a** checked owner-generation/slot texture bindings wired to native loading;
+**L21b** typed texture-quad execution; **L21c** atlas sprite naming, rounded
+placement and flipping; **L21d** fitted-image commands; **L21e** shared bitmap-text
+centering/scaling; **L21f** selection nine-slice planning; **L21g** wallpaper fill/
+texture commands; **L21h** HUD prompt placement; **L21i** thumbnail placement;
+**L21j** stale-resource validation and opt-in actual dummy-SDL copy/recreation.
+Sol strengthened text extent/overhang coverage and retained NES-only palette
+resolution. Every production slice kept the 18 representative SNES/NES/Famicom
+snapshots pixel-identical to the freshly built pre-L21 baseline.
+
+`frontend::menu_scene` now describes leaf texture/fill commands using plain data,
+not filesystem keys or SDL handles. Native UiAssets registers only successful
+loads under a fresh checked non-wrapping generation; stale generations/unknown
+slots are rejected before touching textures. Every resolved copy sets tint,
+alpha and filtering, retaining the old ignored SDL-copy error behavior. Native
+texture destruction, atlas/font/game lookup, stage targets, translation, clocks,
+ROM/firmware/save guards and hit/action binding remain in place. Selection/HUD/
+thumbnail records are layout plans, not retained texture capabilities. Empty
+thumbnail input is defined as empty; native catalog nonempty validation remains.
+
+Verification: **178 default / 177 portable / 287 native unit tests and 74
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. Both opt-in SDL resource tests pass explicitly. The new synthetic
+red/green test verifies real nearest/linear, flip/crop, modulation reset, fill,
+unknown/stale ID rejection and fresh-owner replay after destroying/rebuilding
+assets and canvas. Generation exhaustion/uniqueness tests do not mutate the
+global counter. This is dummy/software-renderer evidence, not generic GPU-loss
+recovery or native GPU failure injection.
+
+The full UI/language regression passed for **132 snapshots** (50 SNES, 48 NES,
+34 Famicom), all pixel-identical to fresh baselines outside the existing elapsed-
+time launcher busy strip. Real-core suspend/save/lock/overwrite/delete/replay/
+restart/navigation checks pass on SNES/NES/Famicom using disposable save data.
+Release SNES/NES dummy-audio checks pass at 50/60/120 Hz presentation with no queue
+underruns. A prior debug SNES audio run failed the rate threshold at its 120 Hz
+phase (53.04 Hz, zero underruns); it is recorded as a failed timing run, not
+silently counted as passed. The menu renderer does not run in that audio loop;
+release verification passed separately without weakening thresholds. Logs and
+generated media are untracked under `.build/l21-*`. These checks do not certify
+physical audio/display/controller performance or new-platform runtime.
+
+**L21 remains partial. Next:** project carousel/title display data and compose
+their typed draw/hit output in small slices, then extend App scene composition
+and its target-pass/resource-recreation gates. The native stage/core/suspend
+ownership boundaries, L22, S07, L25 and Checkpoint C remain separate.
+
+### Previous checkpoint — 2026-10-24 (L20t–x, five chunks)
+
+Five serial Luna chunks complete the **L20 desktop launcher scene extraction**:
+**L20t** native projection into owned, resource-free presentation data (current
+six-row page and selected details only); **L20u** shared composition around the
+explicit status-measurement barrier and native execution; **L20v** external
+fake-host whole-scene/error-order tests; **L20w** opt-in actual dummy-SDL View/
+canvas recreation; **L20x** native projection/interaction parity tests. Sol
+reviewed and independently verified every chunk, strengthened readback dimension
+checks and tested half-open hit edges through the native coordinate wrapper.
+
+The full composed scene owns all commands/status strings and can outlive native
+entries and projection inputs. Built-in font/flag roles resolve against each
+current View. Native code retains classification, path display conversion,
+primary eligibility, font metrics/rasterization and actual resource ownership.
+Status drawing still occurs before the next measurement and stops on propagated
+text errors; fake-host failure injection is not native font/GPU failure testing.
+Scene building/cloning has allocation/input-dependent cost, not a new latency or
+memory bound. Dynamic App image/video resource lifetimes are not solved by this
+fixed-role launcher contract.
+
+Verification: **176 default / 175 portable / 282 native unit tests and 57
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. The additional ignored SDL recreation test was explicitly run with
+dummy video and software rendering and passes: three retained scenes (normal,
+empty, busy/error, all four flag roles and both font roles) produce identical
+pixels with warm resources and after destroying/rebuilding View and canvas.
+Six projection tests cover page/ownership, classification, malformed selections,
+focus/busy style separation and native/2×/wide/portrait hit mapping. All **14
+launcher previews** match a fresh pre-L20t baseline outside the elapsed-time busy
+strip. Opt-in local-image and broader App/audio/suspend regressions were not
+rerun for these launcher changes; physical devices/new-host runtime remain open.
+
+**Next: L21**, one App carousel/HUD view at a time after Sol scopes its dynamic
+resource/target-pass contract. L22, S07, L25 and the full Checkpoint C regression/
+platform gates remain separate. L20's desktop extraction is not Checkpoint C or
+mobile/browser support.
+
+### Previous checkpoint — 2026-10-24 (L20o–s, five chunks)
+
+Five more serial Luna chunks were independently reviewed, tested and preview-
+compared before each next dispatch: **L20o** semantic built-in flag commands and
+their SDL adapter; **L20p** complete library-row command groups from plain display
+data; **L20q** detail-card header/controller/badge group; **L20r** detail region/
+source/note group; **L20s** incremental shared status wrapping with native width
+measurement. Every returned text command owns its string. Native Entry/Profile
+classification, path-to-display conversion, selection and action eligibility
+remain in the adapter. Built-in flag roles resolve against each current View's
+assets, not old texture handles; SVG loading/fallback/error behavior is unchanged.
+
+StatusText exposes exact candidate strings and consumes one host-measured width
+per word. It preserves Unicode whitespace, leading-space candidates, the strict
+550px threshold, overlong first words, draw-before-next-measure order and the
+legacy empty terminal request at y=720 after the three-line cutoff. Shared code
+has no font/measurement callbacks or I/O. Host word processing still has legacy
+input-dependent cost, not a new bounded-update guarantee. Eight pure tests cover
+fixtures, original-loop traces, scalar edge cases and simulated draw failure;
+native font/texture failure injection remains unimplemented.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 50
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. All **14 launcher previews** match a fresh pre-L20o baseline outside
+the elapsed-time busy strip after each chunk and at final verification. Final
+native verification exposed a pre-existing App-import test race: the readiness
+barrier preceded begin_commit, so a legitimate cancellation could win. Sol moved
+that test-only barrier after begin_commit; the exact test passed **20/20** runs
+and the full native suite passed. Production cancellation behavior was unchanged.
+Opt-in local-image and broader App/audio/suspend regressions were not rerun for
+these launcher presentation changes; no new-platform runtime claim is made.
+
+**L20 remains partial. Next:** compose the verified command groups behind a
+host-neutral launcher presentation input, preserving the status measurement/draw
+handshake and native display-data projection. Verify View/resource recreation,
+host interaction parity and full launcher composition before marking L20 done.
+Font metrics/rasterization and dynamic image/video resource-key lifetimes remain
+host concerns; later L21/L22, S07 and L25 are still separate tasks.
+
+### Previous checkpoint — 2026-10-24 (L20j–n, five chunks)
+
+Five serial Luna chunks were independently reviewed, tested and screenshot-
+compared after each: **L20j** empty-library geometry/text requests; **L20k**
+primary-button geometry/text requests; **L20l** footer hints plus the unchanged
+four-value cancellation presentation enum moved to shared launcher activity;
+**L20m** page-indicator requests; **L20n** exact flag-region marker/label metadata.
+Native compatibility re-exports preserve existing callers. Button eligibility,
+worker state-to-view mapping and cancellation ownership are unchanged; pagination
+retains legacy unclamped selected-index/count arithmetic. Flag SVG loading,
+textures, fallback geometry and rendering/error behavior stay native.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 35
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. All **14 launcher previews** match a fresh pre-L20j baseline outside
+the elapsed-time busy strip after every chunk and at final verification. Ten
+text-scene tests now cover exact payload/order/style, owned temporary strings,
+all footer state combinations, page boundaries and maximum indices/counts. A
+pure region test covers exact aliases/labels and rejects case/whitespace/unknown
+markers; both native flag tests (including sourced SVG colors) remain intact.
+App import and launcher tests pass with the shared cancellation enum. Opt-in
+local-image and broader App/audio/suspend regressions were not rerun for these
+launcher presentation changes. No new-platform compilation/runtime is claimed.
+
+**L20 remains partial. Next:** Sol resolves the flag-resource contract and status
+measurement seam before dispatching row/detail/status scene slices. Flag-region
+metadata is not a resource key or flag draw command. Native font fitting/glyph
+layout, flag resources and full ordered scene composition remain open, alongside
+later L21/L22, S07 and L25.
+
+### Previous checkpoint — 2026-10-24 (L20g–i)
+
+Sol approved the incremental owned text-request contract in
+[the update contract](frontend-update-contract.md). Three serial Luna chunks now
+emit mixed geometry/text requests for branding, the sidebar, and library
+header/filter tabs. Each chunk was independently reviewed, tested and compared
+against freshly built launcher previews before the next dispatch. Sol retained
+exhaustive font-role mapping and the sidebar's shared button-coordinate source.
+
+Requests own strings, plain geometry/color/fitting data and a typed embedded
+font role, not SDL glyphs/textures or font paths. The native executor preserves
+command order and calls the unchanged fitting/kerning/ascent/rasterization
+routine, propagating its errors. These are presentation requests, not shared
+glyph layout or a dynamic generation-checked resource registry. Host hit tests
+still supply styling; scene output does not grant action eligibility.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 28
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. All **14 launcher previews** match the fresh pre-L20g baseline
+outside the elapsed-time busy strip. Four pure text-scene tests cover exact
+payloads/order/font roles/style/layout, independent string ownership, sidebar
+state combinations, every filter/hot/busy combination and source counts including
+zero and `usize::MAX`. Broader App/audio/suspend and opt-in image tests were not
+rerun for this launcher-only change; no new-platform runtime claim is made.
+
+**L20 remains partial. Next:** empty-library text, then primary/footer text in
+small chunks. Status wrapping needs its own measurement contract; row/detail
+text interleaves flags, whose resource contract is not yet approved. Font
+measurement, flag drawing/resources and full ordered scene composition remain
+native. L21/L22, S07 and L25 remain later work.
+
+### Previous checkpoint — 2026-10-24 (L20d–f)
+
+Three more small, serial Luna chunks extract the remaining top-level launcher
+chrome: brand/library sidebar accents and filter tabs; library row borders,
+insets and flag backplates plus the empty-library panel; detail/unknown-controller
+panels, separator, primary-button background and import-progress geometry.
+Sol reviewed and independently tested each chunk before dispatching the next.
+All production calls retain their original order relative to text and flags.
+Shared functions consume plain indices/booleans/elapsed seconds, not native
+entries, paths, workers or textures. Rendering does not grant action eligibility;
+the existing cancellation, picker, import and activation owners are unchanged.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 24
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. All **14 launcher previews** match the freshly built pre-L20d
+baseline outside the elapsed-time busy-animation strip. Pure tests separately
+characterize that strip's track/thumb ordering and exact geometry at elapsed
+0, 1, -1 and 42 seconds, plus selected/hover/busy priorities and invalid sidebar/
+tab indices. Native scanline rasterization is unchanged. Broader App/audio/
+suspend regressions and opt-in local-image tests were not rerun for this
+launcher-only extraction; no new-platform runtime evidence is claimed.
+
+**L20 remains partial. Next:** Sol approves the launcher text/flag resource and
+measurement contract, then dispatches one small production text/flag scene slice
+at a time. Text fitting/wrapping, flag textures (including fallback geometry),
+entry-to-display mapping and full ordered scene composition remain native.
+L21/L22, S07 and L25 remain later work.
+
+### Previous checkpoint — 2026-10-24 (L20b/c)
+
+L20b/L20c continue with two small, serial Luna chunks, independently reviewed and
+verified after each. The launcher background emits ordered plain fill commands
+(760 wash scanlines, translucent sidebar and separator); the SDL adapter handles
+both fill and rounded-rectangle commands. Shared Rust also owns stage/page sizes,
+button/filter-tab/row rectangles and letterbox coordinate mapping. Native drawing
+and click handling use compatibility adapters over those same values. Existing
+minimum-scale and out-of-stage coordinate behavior is preserved, not clamped.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 21
+integration tests each** pass. Formatting and warnings-denied portable/native
+Clippy pass. All **14 launcher previews** match a fresh pre-L20b baseline;
+only the elapsed-time busy-animation strip (548×3 pixels) is excluded in busy
+previews. Pure tests cover scanline positions/alpha and representative colors,
+overlay order, fixed layout, scaling, letterbox margins and zero/tiny windows.
+Broader App/audio/suspend regressions and opt-in local-image tests were not rerun
+for these launcher-only changes. No new-platform compilation/runtime claim is
+made; text/flags/resource lifetimes and remaining chrome are still native.
+
+**L20 remains partial. Next:** remaining launcher chrome geometry in small
+slices, then an approved text/flag resource contract before moving those
+commands. L21/L22, S07 and L25 remain later work.
+
+### Previous checkpoint — 2026-10-23
+
+L20a starts launcher scene output with two small, serial Luna chunks: the
+NES/Famicom/SNES controller illustrations now emit owned host-neutral rounded
+rectangle commands, followed by external-host characterization tests of every
+command's order, geometry, color and radius, translation and independent ownership.
+Sol reviewed each chunk, repaired a test-only Clippy warning and strengthened the
+ownership assertion. SDL still owns scanline rasterization; classification,
+fonts, flags, hit testing and the rest of the launcher view remain native.
+
+Verification: **176 default / 175 portable / 276 native unit tests and 19
+integration tests each** pass; formatting and warnings-denied native Clippy pass.
+All three NES/Famicom/SNES launcher previews are pixel-identical to the freshly
+built pre-extraction baseline. Opt-in image tests and broader App/audio/suspend
+regressions were not rerun for this illustration-only change. No new-platform
+runtime evidence or resource-ID lifecycle is implied by resource-free geometry.
+**L20 remains partial. Next:** extract launcher background/chrome geometry in a
+separate chunk, then define the text/flag resource contract before moving those
+commands. L21/L22, S07 and L25 remain later work.
+
+### Previous checkpoint — 2026-10-22
 
 Batch 21 adds the native App host-frame seam: bounded SDL dispatch and dialog
 intake, closing-request cleanup before completion processing, explicit native
@@ -394,8 +833,8 @@ isolate native effects, reduce service activity as data, separate drawing/pacing
 | L19a / Luna | Translate main `App::run` host input into agreed logical events, retaining the current desktop loop. | L18. Keyboard/pad/toolbar/language/suspend event trace parity; no core/render changes. |
 | L19b / Luna | Extract menu/panel event reduction from main loop; keep emulator stepping/audio at existing host caller until S07. | L19a. Repeated fake-host menu ticks need no SDL pump, core or filesystem; lock/overwrite/delete guards unchanged. |
 | L19c / Luna | Separate main menu rendering and desktop pacing invocation from update; provide host scheduling seam for later S07 integration. | L19b. Snapshot/audio timing parity and bounded tick return. Later `L19` means all three. Do not move rendering/core/audio together to make one patch compile. |
-| L20 / Luna | Extract **launcher** scene output and implement it in the existing SDL renderer first. | L14/L18/S06. Resource-ID lifecycle and letterboxed hit testing; empty/busy/error snapshots. No new GPU backend. |
-| L21 / Luna | Extract **game-menu carousel/HUD** scene output, one view at a time; SDL adapter owns target textures and upload. | L14/L19/L20. Stage/covers/font/tooltip/filter/alpha parity and invalid resource tests. Keep gameplay screen separate. |
+| L20 / Luna | **Implemented on desktop:** owned launcher presentation/scene output and existing SDL adapter; status measurement remains an explicit host handshake. | L14/L18/S06. Fixed built-in font/flag roles, actual dummy-SDL View/canvas recreation, letterboxed hit tests and 14 previews verified in L20t–x. No new GPU backend or new-platform support claim. |
+| L21 / Luna → Sol | **Partial (L21a–ax):** combined base/toolbar scenes, tooltips, notices and generic modal-panel scenes are wired into SDL. Distinct toolbar/suspend payloads and App target-pass composition remain. | L14/L19/L20. 132 UI snapshots, pure/native tests and nine dummy-SDL resource tests pass; stage target/core/suspend ownership and later target-pass gates remain native. Keep gameplay screen separate. |
 | L22 / Luna | Extract **modal/toolbar/suspend** scene output in separate patches per panel family. | L07/L21. Dimming, clipping, scroll, lock indicators and screenshots remain correct; render output does not trigger save/load/delete. |
 | S07 / Sol | Introduce emulator owner and audio-output contract, preserving current synchronous owner-thread baseline; choose any worker design only after feasibility evidence. | S01/S02/S06. Session created/used/destroyed on same owner; borrowed buffers never escape; queue bounds/backpressure; load/state/unload failures and SRAM persistence handled. No unsafe `Send`. |
 | L23 / Luna | Wire existing ares through the approved emulator adapter; keep C ABI unchanged unless S07 explicitly requires otherwise. | S07. Generated NES/SNES tests; single-session enforcement; load/unload errors; suspend capture/replay; bounded copied frame/audio if crossing ownership boundary. |

@@ -10,10 +10,23 @@ mod host;
 mod icon;
 mod input;
 mod launcher;
+#[cfg(test)]
+mod menu_carousel_tests;
+mod menu_frame;
+mod menu_overlay;
+mod menu_projection;
+#[cfg(test)]
+mod menu_resource_tests;
+mod panel_projection;
+#[cfg(test)]
+mod panel_replay_tests;
+mod panel_scene;
 mod presentation;
 mod suspend;
+mod texture_resources;
 mod timing;
 mod toolbar;
+mod toolbar_projection;
 
 use crate::frontend::catalog::{self, Game, safe_id};
 use crate::frontend::menu_input::Key;
@@ -57,6 +70,7 @@ struct UiAssets {
     root: PathBuf,
     creator: TextureCreator<WindowContext>,
     textures: HashMap<String, Texture>,
+    texture_bindings: texture_resources::TextureBindings,
     sprites: HashMap<String, FRect>,
     fonts: BTreeMap<String, Font>,
     layout: Value,
@@ -70,6 +84,127 @@ struct UiAssets {
 }
 
 impl UiAssets {
+    fn execute_base_menu(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        scene: &crate::frontend::menu_frame::BaseMenuScene,
+        context: &menu_frame::BindingContext,
+        hits: &mut Vec<Hit>,
+    ) -> bool {
+        if scene.generation != context.generation
+            || context.generation != self.texture_bindings.generation()
+        {
+            return false;
+        }
+        for step in &scene.steps {
+            match step {
+                crate::frontend::menu_frame::Step::Draw(command) => {
+                    self.draw_command(canvas, command);
+                }
+                crate::frontend::menu_frame::Step::Hit(hit) => {
+                    if let Some(action) = menu_frame::resolve_hit(&hit.action, context) {
+                        hits.push(Hit {
+                            action,
+                            rect: to_frect(hit.rect),
+                        });
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn execute_notice(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        scene: &crate::frontend::menu_overlay::NoticeScene,
+    ) -> bool {
+        if scene.generation != self.texture_bindings.generation() {
+            return false;
+        }
+        menu_overlay::draw_dialog(canvas, scene.dialog);
+        self.draw_commands(canvas, scene.commands.iter().copied());
+        true
+    }
+
+    fn execute_panel(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        scene: &panel_scene::PanelScene,
+        bindings: &panel_scene::PanelBindings,
+        hits: &mut Vec<Hit>,
+        actions: &mut Vec<String>,
+    ) -> bool {
+        if scene.generation != bindings.generation
+            || bindings.generation != self.texture_bindings.generation()
+        {
+            return false;
+        }
+        hits.clear();
+        actions.clear();
+        for step in &scene.steps {
+            match step {
+                panel_scene::PanelStep::Draw(command) => {
+                    self.draw_command(canvas, command);
+                }
+                panel_scene::PanelStep::Dialog(rect) => menu_overlay::draw_dialog(canvas, *rect),
+                panel_scene::PanelStep::Hit { key, rect } => {
+                    if let Some(action) = bindings.resolve(key) {
+                        hits.push(Hit {
+                            action,
+                            rect: to_frect(*rect),
+                        });
+                    }
+                }
+            }
+        }
+        actions.extend(scene.actions.iter().filter_map(|key| bindings.resolve(key)));
+        true
+    }
+}
+
+impl UiAssets {
+    fn card_resources(
+        &self,
+        plan: &crate::frontend::menu_carousel::CardPlan,
+        cover_key: &str,
+    ) -> crate::frontend::menu_carousel::CardResources {
+        let mut resources = crate::frontend::menu_carousel::CardResources::default();
+        for part in &plan.parts {
+            if let crate::frontend::menu_carousel::CardPart::Sprite(sprite) = part
+                && let Some(source) = self.sprite_source(&sprite.name)
+            {
+                resources.sprites.insert(sprite.name.clone(), source);
+            }
+        }
+        resources.cover = self.image_source(cover_key);
+        resources
+    }
+
+    fn sprite_source(&self, name: &str) -> Option<crate::frontend::menu_scene::AtlasSprite> {
+        let (key, flip_x) = crate::frontend::menu_scene::sprite_key(name);
+        let source = self.sprites.get(&key).copied()?;
+        let texture = self.texture_bindings.id("skin/packed.png")?;
+        self.texture_bindings.key(texture)?;
+        self.textures.get("skin/packed.png")?;
+        Some(crate::frontend::menu_scene::AtlasSprite {
+            texture,
+            source: from_frect(source),
+            flip_x,
+        })
+    }
+
+    fn image_source(&self, key: &str) -> Option<crate::frontend::menu_scene::ImageSource> {
+        let texture_id = self.texture_bindings.id(key)?;
+        self.texture_bindings.key(texture_id)?;
+        let query = self.textures.get(key)?.query();
+        Some(crate::frontend::menu_scene::ImageSource {
+            texture: texture_id,
+            width: query.width,
+            height: query.height,
+        })
+    }
+
     fn palette_color(&self, key: &str, fallback: Color) -> Color {
         let channels = crate::frontend::skin_metadata::palette_color(
             &self.palette,
@@ -100,6 +235,7 @@ impl UiAssets {
             root: root.to_path_buf(),
             creator,
             textures: HashMap::new(),
+            texture_bindings: texture_resources::TextureBindings::new()?,
             sprites,
             fonts: BTreeMap::new(),
             layout,
@@ -204,6 +340,7 @@ impl UiAssets {
         texture.set_blend_mode(BlendMode::Blend);
         texture.set_scale_mode(ScaleMode::Nearest);
         self.textures.insert(key.to_owned(), texture);
+        self.texture_bindings.bind(key);
         Ok(())
     }
 
@@ -222,6 +359,97 @@ impl UiAssets {
         crate::frontend::font::measure(&self.fonts, value, primary_name)
     }
 
+    fn texture_mut(&mut self, id: crate::frontend::menu_scene::TextureId) -> Option<&mut Texture> {
+        let key = self.texture_bindings.key(id)?;
+        self.textures.get_mut(key)
+    }
+
+    fn draw_command(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        command: &crate::frontend::menu_scene::Command,
+    ) -> bool {
+        use crate::frontend::menu_scene::{Command, Filter};
+
+        match command {
+            Command::Fill { rect, color } => {
+                canvas.set_draw_color(Color::RGBA(color.r, color.g, color.b, color.a));
+                let _ = canvas.fill_rect(to_frect(*rect));
+                true
+            }
+            Command::Texture(quad) => {
+                let Some(texture) = self.texture_mut(quad.texture) else {
+                    return false;
+                };
+                texture.set_color_mod(quad.tint.r, quad.tint.g, quad.tint.b);
+                texture.set_alpha_mod(quad.tint.a);
+                texture.set_scale_mode(match quad.filter {
+                    Filter::Nearest => ScaleMode::Nearest,
+                    Filter::Linear => ScaleMode::Linear,
+                });
+                let destination = to_frect(quad.destination);
+                let source = quad.source.map(to_frect);
+                if quad.flip_x {
+                    let _ = canvas.copy_ex(texture, source, destination, 0.0, None, true, false);
+                } else {
+                    let _ = canvas.copy(texture, source, destination);
+                }
+                true
+            }
+        }
+    }
+
+    fn draw_commands(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        commands: impl IntoIterator<Item = crate::frontend::menu_scene::Command>,
+    ) {
+        for command in commands {
+            self.draw_command(canvas, &command);
+        }
+    }
+
+    fn font_atlases(&self) -> BTreeMap<String, crate::frontend::menu_scene::TextureId> {
+        self.fonts
+            .keys()
+            .filter_map(|name| {
+                let key = format!("skin/font-{name}.png");
+                Some((name.clone(), self.texture_bindings.id(&key)?))
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn text_commands(
+        &self,
+        value: &str,
+        x: f32,
+        y: f32,
+        font_name: &str,
+        color: Color,
+        max_width: f32,
+        line_anchor: bool,
+    ) -> Vec<crate::frontend::menu_scene::Command> {
+        let layout = self.measure(value, font_name);
+        crate::frontend::menu_scene::text(
+            &layout,
+            &self.font_atlases(),
+            crate::frontend::menu_scene::TextPosition {
+                x,
+                y,
+                max_width,
+                line_anchor,
+                tint: crate::frontend::menu_scene::Rgba {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                    a: color.a,
+                },
+            },
+        )
+    }
+
+    #[allow(dead_code)]
     fn draw_texture(
         &mut self,
         canvas: &mut Canvas<Window>,
@@ -231,16 +459,31 @@ impl UiAssets {
         color: Color,
         smooth: bool,
     ) {
-        if let Some(texture) = self.textures.get_mut(key) {
-            texture.set_color_mod(color.r, color.g, color.b);
-            texture.set_alpha_mod(color.a);
-            texture.set_scale_mode(if smooth {
-                ScaleMode::Linear
-            } else {
-                ScaleMode::Nearest
-            });
-            let _ = canvas.copy(texture, src, dest);
-        }
+        use crate::frontend::menu_scene::{Command, Filter, Rgba, TextureQuad};
+
+        let Some(texture) = self.texture_bindings.id(key) else {
+            return;
+        };
+        self.draw_command(
+            canvas,
+            &Command::Texture(TextureQuad {
+                texture,
+                destination: from_frect(dest),
+                source: src.map(from_frect),
+                tint: Rgba {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                    a: color.a,
+                },
+                filter: if smooth {
+                    Filter::Linear
+                } else {
+                    Filter::Nearest
+                },
+                flip_x: false,
+            }),
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -254,51 +497,26 @@ impl UiAssets {
         height: f32,
         color: Color,
     ) {
-        let flip = name == "caption_edge_left";
-        let name = if flip { "caption_edge" } else { name };
-        let key = if name.ends_with(".png") {
-            name.to_owned()
-        } else {
-            format!("{name}.png")
-        };
-        if let Some(src) = self.sprites.get(&key).copied() {
-            let dest = FRect::new(
-                (x - width * 0.5).round(),
-                (y - height * 0.5).round(),
-                width,
-                height,
+        if let Some(source) = self.sprite_source(name) {
+            let command = crate::frontend::menu_scene::sprite(
+                source.texture,
+                source.source,
+                crate::frontend::menu_scene::Rect {
+                    x,
+                    y,
+                    w: width,
+                    h: height,
+                },
+                crate::frontend::menu_scene::Rgba {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                    a: color.a,
+                },
+                source.flip_x,
             );
-            if flip {
-                if let Some(texture) = self.textures.get_mut("skin/packed.png") {
-                    texture.set_color_mod(color.r, color.g, color.b);
-                    texture.set_alpha_mod(color.a);
-                    texture.set_scale_mode(ScaleMode::Nearest);
-                    let _ = canvas.copy_ex(texture, Some(src), dest, 0.0, None, true, false);
-                }
-            } else {
-                self.draw_texture(canvas, "skin/packed.png", dest, Some(src), color, false);
-            }
+            self.draw_command(canvas, &command);
         }
-    }
-
-    fn fit_image(&mut self, canvas: &mut Canvas<Window>, key: &str, rect: FRect, alpha: u8) {
-        let Some(texture) = self.textures.get_mut(key) else {
-            return;
-        };
-        let query = texture.query();
-        let scale = (rect.w / query.width as f32).min(rect.h / query.height as f32);
-        let width = query.width as f32 * scale;
-        let height = query.height as f32 * scale;
-        texture.set_color_mod(255, 255, 255);
-        texture.set_alpha_mod(alpha);
-        texture.set_scale_mode(ScaleMode::Linear);
-        let dest = FRect::new(
-            rect.x + (rect.w - width) * 0.5,
-            rect.y + (rect.h - height) * 0.5,
-            width,
-            height,
-        );
-        let _ = canvas.copy(texture, None, dest);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -313,49 +531,11 @@ impl UiAssets {
         max_width: f32,
         line_anchor: bool,
     ) {
-        let layout = self.measure(value, font_name);
-        let extent = if line_anchor {
-            layout.advance.max(layout.right)
-        } else {
-            layout.right - layout.left
-        };
-        let scale = (max_width / extent.max(1.0)).min(1.0);
-        let left = x
-            - (if line_anchor {
-                layout.advance * 0.5
-            } else {
-                (layout.left + layout.right) * 0.5
-            }) * scale;
-        let top = y
-            - (if line_anchor {
-                layout.line * 0.5
-            } else {
-                (layout.top + layout.bottom) * 0.5
-            }) * scale;
-        for glyph in layout.glyphs {
-            let key = format!("skin/font-{}.png", glyph.font);
-            let dest = FRect::new(
-                left + glyph.x * scale,
-                top + glyph.y * scale,
-                glyph.width * scale,
-                glyph.height * scale,
-            );
-            self.draw_texture(
-                canvas,
-                &key,
-                dest,
-                Some(FRect::new(
-                    glyph.source.x,
-                    glyph.source.y,
-                    glyph.source.w,
-                    glyph.source.h,
-                )),
-                color,
-                true,
-            );
-        }
+        let commands = self.text_commands(value, x, y, font_name, color, max_width, line_anchor);
+        self.draw_commands(canvas, commands);
     }
 
+    #[allow(dead_code)]
     fn selection(
         &mut self,
         canvas: &mut Canvas<Window>,
@@ -365,51 +545,24 @@ impl UiAssets {
         height: f32,
         time: f32,
     ) {
-        let phase = time.rem_euclid(2.25);
-        let tint = if phase < 0.5 {
-            0.75 + 0.5 * phase
-        } else if phase < 1.25 {
-            1.0
-        } else if phase < 2.0 {
-            1.0 - (phase - 1.25) / 3.0
-        } else {
-            0.75
-        };
-        let color = Color::RGB((255.0 * tint) as u8, (255.0 * tint) as u8, 255);
-        let widths = [32.0, width - 64.0, 32.0];
-        let heights = [32.0, height - 64.0, 32.0];
-        let left = x - width * 0.5;
-        let top = y - height * 0.5;
-        for (row, &row_height) in heights.iter().enumerate() {
-            for (column, &column_width) in widths.iter().enumerate() {
-                if row == 1 && column == 1 {
-                    continue;
-                }
-                let tile = row * 3 + column + 1;
-                let name = if !self.nes && row != 1 && column != 1 {
-                    format!("cursor_{tile}")
-                } else {
-                    format!("cursor_game_{tile}")
-                };
-                let cx =
-                    left + (if column == 0 {
-                        0.0
-                    } else if column == 1 {
-                        32.0
-                    } else {
-                        width - 32.0
-                    }) + column_width * 0.5;
-                let cy =
-                    top + (if row == 0 {
-                        0.0
-                    } else if row == 1 {
-                        32.0
-                    } else {
-                        height - 32.0
-                    }) + row_height * 0.5;
-                self.sprite(canvas, &name, cx, cy, column_width, row_height, color);
+        let plan = crate::frontend::menu_scene::selection(
+            self.nes,
+            crate::frontend::menu_scene::Rect {
+                x,
+                y,
+                w: width,
+                h: height,
+            },
+            time,
+        );
+        let mut sources = BTreeMap::new();
+        for placement in &plan {
+            if let Some(source) = self.sprite_source(&placement.name) {
+                sources.insert(placement.name.clone(), source);
             }
         }
+        let commands = crate::frontend::menu_scene::sprite_scene(&plan, &sources);
+        self.draw_commands(canvas, commands);
     }
 }
 
@@ -583,6 +736,19 @@ struct App {
 
 type MenuFocus = crate::frontend::menu_navigation::MenuFocus;
 
+fn from_frect(rect: FRect) -> crate::frontend::menu_scene::Rect {
+    crate::frontend::menu_scene::Rect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+    }
+}
+
+fn to_frect(rect: crate::frontend::menu_scene::Rect) -> FRect {
+    FRect::new(rect.x, rect.y, rect.w, rect.h)
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         self.image_import.shutdown();
@@ -603,6 +769,18 @@ impl Drop for UiAssets {
 }
 
 impl App {
+    fn dialog(&mut self, canvas: &mut Canvas<Window>, x: f32, y: f32, width: f32, height: f32) {
+        menu_overlay::draw_dialog(
+            canvas,
+            crate::frontend::menu_scene::Rect {
+                x,
+                y,
+                w: width,
+                h: height,
+            },
+        );
+    }
+
     fn new(
         canvas: &Canvas<Window>,
         assets_path: PathBuf,
@@ -1812,783 +1990,69 @@ impl App {
             self.panel.as_str(),
             "resume" | "confirm-overwrite" | "confirm-delete"
         );
-        let title_shift = if suspend_layout { -52.0 } else { 0.0 };
-        let card_shift = if suspend_layout { -69.0 } else { 0.0 };
         let elapsed = self.animation_start.elapsed().as_secs_f32();
-        let progress = (self.scroll_started.elapsed().as_secs_f32() / 0.24).clamp(0.0, 1.0);
-        self.scroll_current = if self.motion {
-            self.scroll_from + (self.scroll_to - self.scroll_from) * progress
-        } else {
-            self.scroll_to
-        };
+        let scroll_elapsed = self.scroll_started.elapsed().as_secs_f32();
         let wallpaper_duration = self
             .art
             .layout
             .get("wallpaperDuration")
             .and_then(Value::as_f64)
             .unwrap_or(1.0) as f32;
-        let offset = if self.motion {
-            elapsed.rem_euclid(wallpaper_duration.max(0.1)) / wallpaper_duration.max(0.1) * 1536.0
-        } else {
-            0.0
-        };
-        if self.art.nes {
-            self.rect(
-                canvas,
-                FRect::new(0.0, 87.0, 1280.0, 552.0),
-                self.art.palette_color(
-                    "background",
-                    if self.art.region == "Japan" {
-                        Color::RGB(235, 226, 213)
-                    } else {
-                        Color::RGB(0, 21, 61)
-                    },
-                ),
-            );
-            // The original dot atlas is a pixel-art mask, not a scrolling
-            // 32x32 wallpaper tile. Do not stretch its padding into a grid.
-        } else {
-            for tile in -1..=1 {
-                let dest = FRect::new(-128.0 - offset + tile as f32 * 1536.0, 87.0, 1536.0, 552.0);
-                self.art
-                    .draw_texture(canvas, "skin/wall.png", dest, None, Color::WHITE, true);
-            }
-        }
-        self.art.sprite(
-            canvas,
-            "caption_title",
-            640.0,
-            178.0 + title_shift,
-            if self.art.nes { 1026.0 } else { 1044.0 },
-            66.0,
-            Color::WHITE,
+        let motion =
+            crate::frontend::menu_motion::motion(crate::frontend::menu_motion::MotionInput {
+                suspend_layout,
+                motion: self.motion,
+                animation_elapsed: elapsed,
+                scroll_elapsed,
+                scroll_from: self.scroll_from,
+                scroll_to: self.scroll_to,
+                wallpaper_duration,
+            });
+        self.scroll_current = motion.scroll_current;
+        let frame = self.project_base_menu(motion, suspend_layout);
+        let scene = crate::frontend::menu_frame::compose(frame);
+        let context = menu_frame::BindingContext::new(
+            self.art.texture_bindings.generation(),
+            self.games.iter().map(|game| game.id.clone()),
         );
-        let title = self.selected().title.clone();
-        self.art.text(
-            canvas,
-            &title,
-            640.0,
-            176.0 + title_shift,
-            "title",
-            self.art.title_color,
-            990.0,
-            true,
-        );
-        let gap = self
-            .art
-            .layout
-            .get("cardSpacing")
-            .and_then(Value::as_f64)
-            .unwrap_or(300.0) as f32;
-        for i in self.scroll_current.floor() as i32 - 3..=self.scroll_current.floor() as i32 + 3 {
-            let index = i.rem_euclid(self.games.len() as i32) as usize;
-            let game = self.games[index].clone();
-            let firmware_locked = !self.firmware_ready(&game) || self.rom_path(&game).is_none();
-            let x = (640.0 + (i as f32 - self.scroll_current) * gap).round();
-            if !(-150.0..=1430.0).contains(&x) {
-                continue;
-            }
-            let active = index == self.selected;
-            self.art.sprite(
-                canvas,
-                if active {
-                    "game_card_active"
-                } else {
-                    "game_card"
-                },
-                x + if self.art.nes { 3.0 } else { 0.0 },
-                (if self.art.nes { 363.0 } else { 360.0 }) + card_shift,
-                if self.art.nes { 246.0 } else { 252.0 },
-                if self.art.nes { 270.0 } else { 276.0 },
-                Color::WHITE,
-            );
-            self.art.fit_image(
-                canvas,
-                &format!("games/{}/{}.png", game.id, game.id),
-                FRect::new(x - 114.0, 234.0 + card_shift, 228.0, 204.0),
-                if firmware_locked { 165 } else { 255 },
-            );
-            if firmware_locked {
-                self.art.sprite(
-                    canvas,
-                    "icon_lock",
-                    x + 98.0,
-                    239.0 + card_shift,
-                    28.0,
-                    36.0,
-                    Color::WHITE,
-                );
-            }
-            let player_icon = if game.players > 1 {
-                if game.simultaneous {
-                    "icon_2P_simultaneous"
-                } else {
-                    "icon_1P-2P"
-                }
-            } else {
-                "icon_1P"
-            };
-            let player_icon = if self.art.nes && active {
-                format!("{player_icon}_active")
-            } else {
-                player_icon.to_owned()
-            };
-            self.art.sprite(
-                canvas,
-                &player_icon,
-                x + if self.art.nes { 76.5 } else { 81.0 },
-                (if self.art.nes { 463.5 } else { 462.0 }) + card_shift,
-                if self.art.nes { 57.0 } else { 66.0 },
-                if self.art.nes { 33.0 } else { 42.0 },
-                Color::WHITE,
-            );
-            for slot in 0..4 {
-                let saved = self.saved.contains(&(game.id.clone(), slot));
-                let locked = saved
-                    && self
-                        .preferences
-                        .pointer(&format!("/suspendLocks/{}/{slot}", game.id))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                let name = format!(
-                    "{}{}",
-                    if locked {
-                        "icon_Resume_lock"
-                    } else if saved {
-                        "icon_Resume_on"
-                    } else {
-                        "icon_Resume_off"
-                    },
-                    if active { "_active" } else { "" }
-                );
-                self.art.sprite(
-                    canvas,
-                    &name,
-                    x - (if self.art.nes { 88.0 } else { 96.0 }) + slot as f32 * 24.0,
-                    468.0 + card_shift,
-                    18.0,
-                    18.0,
-                    Color::WHITE,
-                );
-            }
-            self.hit(
-                format!("game:{}", game.id),
-                FRect::new(x - 126.0, 222.0 + card_shift, 252.0, 276.0),
-            );
-        }
-        if self.menu_focus == MenuFocus::Games && !suspend_layout {
-            self.art.selection(
-                canvas,
-                640.0 + (self.scroll_to - self.scroll_current) * gap,
-                360.0,
-                278.0,
-                302.0,
-                if self.motion { elapsed } else { 0.5 },
-            );
-        }
-        self.art.sprite(
-            canvas,
-            "arrow_left",
-            38.0,
-            360.0 + card_shift,
-            32.0,
-            44.0,
-            Color::WHITE,
-        );
-        self.art.sprite(
-            canvas,
-            "arrow_right",
-            1242.0,
-            360.0 + card_shift,
-            32.0,
-            44.0,
-            Color::WHITE,
-        );
-        self.hit("previous", FRect::new(0.0, 240.0, 65.0, 255.0));
-        self.hit("next", FRect::new(1215.0, 240.0, 65.0, 255.0));
-        let step = 42.0_f32.min(1080.0 / self.games.len() as f32);
-        let left = 640.0 - (self.games.len() - 1) as f32 * step * 0.5;
-        for index in 0..self.games.len() {
-            let game = self.games[index].clone();
-            let x = left + index as f32 * step;
-            self.art.fit_image(
-                canvas,
-                &format!("games/{}/{}_small.png", game.id, game.id),
-                FRect::new(x - 16.0, 535.0, 32.0, 32.0),
-                if index == self.selected { 255 } else { 190 },
-            );
-            if index == self.selected {
-                self.art.sprite(
-                    canvas,
-                    "curor_thumbnail_1",
-                    x,
-                    522.0,
-                    24.0,
-                    16.0,
-                    Color::WHITE,
-                );
-            }
-            if !self.firmware_ready(&game) {
-                self.art.sprite(
-                    canvas,
-                    "icon_lock",
-                    x + 9.0,
-                    542.0,
-                    14.0,
-                    18.0,
-                    Color::WHITE,
-                );
-            }
-            self.hit(
-                format!("game:{}", game.id),
-                FRect::new(x - step * 0.5, 526.0, step, 55.0),
-            );
-        }
-        let prompts = [
-            (
-                "icon_direction_up_light",
-                self.art.translate("sys_gametitlelist_hud_Menu", "Menu"),
-                if self.art.nes { 30.0 } else { 36.0 },
-                "settings",
-            ),
-            (
-                "icon_direction_down_light",
-                self.art.translate("sys_gametitlelist_hud_Resume", "Resume"),
-                if self.art.nes { 30.0 } else { 36.0 },
-                "resume-panel",
-            ),
-            (
-                "icon_select_light",
-                self.art.translate("sys_gametitlelist_hud_Sort", "Sort"),
-                if self.art.nes { 90.0 } else { 96.0 },
-                "sort",
-            ),
-            (
-                "icon_start_light",
-                self.art.translate("sys_gametitlelist_hud_Decide", "Start"),
-                if self.art.nes { 78.0 } else { 84.0 },
-                "start",
-            ),
-        ];
-        let item_gap = self
-            .art
-            .layout
-            .get("hudItemGap")
-            .and_then(Value::as_f64)
-            .unwrap_or(8.0) as f32;
-        let group_gap = self
-            .art
-            .layout
-            .get("hudGroupGap")
-            .and_then(Value::as_f64)
-            .unwrap_or(24.0) as f32;
-        let widths: Vec<_> = prompts
-            .iter()
-            .map(|(_, label, icon, _)| *icon + item_gap + self.art.measure(label, "s").advance)
-            .collect();
-        let width: f32 = widths.iter().sum::<f32>() + group_gap * 3.0;
-        let mut x = 640.0 - width * 0.5;
-        for ((icon, label, icon_width, action), whole) in prompts.iter().zip(widths) {
-            let label_width = self.art.measure(label, "s").advance;
-            self.art.sprite(
-                canvas,
-                icon,
-                x + icon_width * 0.5,
-                if self.art.nes { 612.0 } else { 609.0 },
-                *icon_width,
-                if self.art.nes {
-                    if *icon_width == 30.0 { 30.0 } else { 24.0 }
-                } else if *icon_width == 36.0 {
-                    36.0
-                } else {
-                    30.0
-                },
-                Color::WHITE,
-            );
-            self.art.text(
-                canvas,
-                label,
-                x + icon_width + item_gap + label_width * 0.5,
-                if self.art.nes { 612.0 } else { 609.0 },
-                "s",
-                self.art.hud_color,
-                1200.0,
-                true,
-            );
-            self.hit(*action, FRect::new(x - 5.0, 585.0, whole + 10.0, 48.0));
-            x += whole + group_gap;
-        }
-        self.art.sprite(
-            canvas,
-            "menubar_U",
-            640.0,
-            36.0,
-            1296.0,
-            120.0,
-            Color::WHITE,
-        );
-        self.art.sprite(
-            canvas,
-            "menubar_L",
-            640.0,
-            690.0,
-            1296.0,
-            120.0,
-            Color::WHITE,
-        );
-        if self.art.nes && self.art.region != "Japan" {
-            self.art.sprite(
-                canvas,
-                "menubar_U_2",
-                640.0,
-                36.0,
-                480.0,
-                120.0,
-                Color::WHITE,
-            );
-        }
-        let icons = [
-            "btn_display",
-            "btn_option",
-            "btn_language",
-            "btn_copyright",
-            "manual",
-        ];
-        for (index, icon) in icons.iter().enumerate() {
-            let bx = 640.0 + (index as f32 - 2.0) * 96.0;
-            let keyboard_focus = self.menu_focus == MenuFocus::Toolbar
-                && self.toolbar_index == index
-                && self.panel.is_empty();
-            if self.hover == format!("toolbar:{index}")
-                || self.panel == format!("toolbar:{index}")
-                || keyboard_focus
-            {
-                self.art.sprite(
-                    canvas,
-                    "btn_menubar_active",
-                    bx,
-                    62.0,
-                    96.0,
-                    70.0,
-                    Color::WHITE,
-                );
-            }
+        let toolbar_scene = self.project_menu_toolbar();
+        if let Some(scene) = crate::frontend::menu_frame::with_toolbar(scene, toolbar_scene) {
             self.art
-                .sprite(canvas, icon, bx, 62.0, 72.0, 72.0, Color::WHITE);
-            self.hit(
-                format!("toolbar:{index}"),
-                FRect::new(bx - 46.0, 27.0, 92.0, 70.0),
-            );
-            if (self.hover == format!("toolbar:{index}") || keyboard_focus) && self.panel.is_empty()
-            {
-                let key = [
-                    "sys_menubarU_cm_Display",
-                    "sys_menubarU_cm_Option",
-                    "sys_menubarU_cm_Language",
-                    "sys_menubarU_cm_Copyright",
-                    "sys_menubarU_cm_Manual",
-                ][index];
-                let label = self.art.translate(
-                    key,
-                    ["Display", "Settings", "Language", "Game info", "Help"][index],
-                );
-                let style = self
-                    .art
-                    .layout
-                    .get("tooltip")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let body_y = style.get("bodyY").and_then(Value::as_f64).unwrap_or(122.0) as f32;
-                let height = style.get("height").and_then(Value::as_f64).unwrap_or(66.0) as f32;
-                let edge = style
-                    .get("edgeWidth")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(12.0) as f32;
-                let minimum = style
-                    .get("minimumWidth")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(144.0) as f32;
-                let body = minimum.max(self.art.measure(&label, "s").advance);
-                self.art
-                    .sprite(canvas, "caption", bx, body_y, body, height, Color::WHITE);
-                self.art.sprite(
-                    canvas,
-                    "caption_edge_left",
-                    bx - body * 0.5 - edge * 0.5,
-                    body_y,
-                    edge,
-                    height,
-                    Color::WHITE,
-                );
-                self.art.sprite(
-                    canvas,
-                    "caption_edge",
-                    bx + body * 0.5 + edge * 0.5,
-                    body_y,
-                    edge,
-                    height,
-                    Color::WHITE,
-                );
-                self.art.sprite(
-                    canvas,
-                    "caption_arrow",
-                    bx,
-                    body_y - height * 0.5 + 9.0,
-                    24.0,
-                    24.0,
-                    Color::WHITE,
-                );
-                let position = self
-                    .art
-                    .layout
-                    .pointer("/labels/tooltip/position/1")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(128.0) as f32;
-                self.art.text(
-                    canvas,
-                    &label,
-                    bx,
-                    position,
-                    "s",
-                    self.art.palette_color(
-                        "caption",
-                        if self.art.nes {
-                            Color::BLACK
-                        } else {
-                            Color::WHITE
-                        },
-                    ),
-                    1200.0,
-                    true,
-                );
+                .execute_base_menu(canvas, &scene, &context, &mut self.hits);
+        }
+        match crate::frontend::menu_overlay::route(&self.panel) {
+            crate::frontend::menu_overlay::OverlayRoute::None => {}
+            crate::frontend::menu_overlay::OverlayRoute::Resume => self.render_suspend(canvas),
+            crate::frontend::menu_overlay::OverlayRoute::ResumeConfirmation => {
+                self.render_suspend(canvas);
+                self.render_suspend_confirmation(canvas);
             }
-        }
-        if self.panel == "resume" {
-            self.render_suspend(canvas);
-        } else if self.panel == "confirm-overwrite" || self.panel == "confirm-delete" {
-            self.render_suspend(canvas);
-            self.render_suspend_confirmation(canvas);
-        } else if self.panel == "settings" || self.panel.starts_with("toolbar:") {
-            self.render_toolbar(canvas);
-        } else if self.panel == "emulator-settings"
-            || self.panel == "help"
-            || self.panel == "message"
-            || self.panel == "profiles"
-        {
-            self.render_panel(canvas);
-        } else if self.panel == "notice" {
-            self.dialog(canvas, 304.0, 312.0, 672.0, 96.0);
-            let message = self.message.clone();
-            self.art.text(
-                canvas,
-                &message,
-                640.0,
-                356.0,
-                "l",
-                Color::WHITE,
-                610.0,
-                true,
-            );
-        }
-    }
-
-    fn dialog(&mut self, canvas: &mut Canvas<Window>, x: f32, y: f32, width: f32, height: f32) {
-        self.rect(canvas, FRect::new(x, y, width, height), Color::BLACK);
-        canvas.set_draw_color(Color::WHITE);
-        for inset in 0..3 {
-            let _ = canvas.draw_rect(FRect::new(
-                x + inset as f32,
-                y + inset as f32,
-                width - inset as f32 * 2.0,
-                height - inset as f32 * 2.0,
-            ));
+            crate::frontend::menu_overlay::OverlayRoute::Toolbar => self.render_toolbar(canvas),
+            crate::frontend::menu_overlay::OverlayRoute::Panel => self.render_panel(canvas),
+            crate::frontend::menu_overlay::OverlayRoute::Notice => {
+                let message = self.message.clone();
+                let layout = self.art.measure(&message, "l");
+                let scene = crate::frontend::menu_overlay::notice(
+                    self.art.texture_bindings.generation(),
+                    &layout,
+                    &self.art.font_atlases(),
+                );
+                self.art.execute_notice(canvas, &scene);
+            }
         }
     }
 
     fn render_panel(&mut self, canvas: &mut Canvas<Window>) {
-        self.hits.clear();
-        self.actions.clear();
-        self.rect(
+        let projected = self.project_panel();
+        let scene = crate::frontend::menu_panel::compose_panel(projected.input);
+        if self.art.execute_panel(
             canvas,
-            FRect::new(0.0, 96.0, STAGE_W, 550.0),
-            Color::RGBA(0, 0, 0, 190),
-        );
-        self.dialog(canvas, 200.0, 128.0, 880.0, 478.0);
-        let page = if self.panel == "help" {
-            Some(4)
-        } else {
-            self.panel
-                .strip_prefix("toolbar:")
-                .and_then(|v| v.parse::<usize>().ok())
-        };
-        let settings = self.panel == "emulator-settings" || page == Some(1);
-        let heading = match (self.panel.as_str(), page) {
-            ("message", _) => "Classic Menu".to_owned(),
-            ("profiles", _) => "Image Library".to_owned(),
-            (_, Some(0)) => self.art.translate("sys_display_Title", "Display"),
-            (_, Some(1)) => self.art.translate("sys_option_Title", "Settings"),
-            (_, Some(2)) => self.art.translate("sys_language_hud_Title", "Language"),
-            (_, Some(3)) => self.selected().title.clone(),
-            (_, Some(4)) => "Help".to_owned(),
-            ("emulator-settings", _) => "Emulator / Image Library".to_owned(),
-            _ => self.art.translate("sys_resume_Title", "Suspend points"),
-        };
-        self.art.text(
-            canvas,
-            &heading,
-            640.0,
-            174.0,
-            "l",
-            Color::WHITE,
-            790.0,
-            true,
-        );
-        let mut y = 227.0;
-        let import_notice = self.owned_import_notice() || self.preview_import_notice.is_some();
-        let entries: Vec<(String, String)> = if import_notice {
-            vec![("dismiss-import".into(), "Continue browsing".into())]
-        } else if self.panel == "profiles" {
-            let mut profiles: Vec<_> = self
-                .profiles
-                .iter()
-                .map(|profile| {
-                    let name = profile
-                        .directory
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    (format!("profile:{name}"), profile.label())
-                })
-                .collect();
-            profiles.push((
-                "import-image".into(),
-                "Import image or switch version...".into(),
-            ));
-            profiles
-        } else if page == Some(2) {
-            self.art
-                .languages
-                .keys()
-                .map(|locale| {
-                    let label = match locale.as_str() {
-                        "usa_en" => "English",
-                        "eur_de" => "Deutsch",
-                        "eur_fr" => "Français",
-                        "eur_es" => "Español",
-                        "eur_it" => "Italiano",
-                        "eur_nl" => "Nederlands",
-                        "eur_pt" => "Português (Europeu)",
-                        "eur_ru" => "Русский",
-                        "jpn_ja" => "Japanese",
-                        other => other,
-                    };
-                    (
-                        format!("language:{locale}"),
-                        format!(
-                            "{}{}",
-                            if *locale == self.art.locale {
-                                "[x] "
-                            } else {
-                                "[ ] "
-                            },
-                            label
-                        ),
-                    )
-                })
-                .collect()
-        } else if self.panel == "message" || page == Some(3) || page == Some(4) {
-            Vec::new()
-        } else if settings {
-            vec![
-                ("rom".into(), "Choose ROM for selected game".into()),
-                (
-                    "firmware".into(),
-                    "Choose coprocessor firmware folder".into(),
-                ),
-                (
-                    "profiles".into(),
-                    "Image Library / Switch Version (F2)".into(),
-                ),
-                (
-                    "sound".into(),
-                    format!("Menu sound: {}", if self.sound { "On" } else { "Off" }),
-                ),
-                (
-                    "motion".into(),
-                    format!("Animation: {}", if self.motion { "On" } else { "Off" }),
-                ),
-                ("slot".into(), format!("Suspend slot: {}", self.slot + 1)),
-                ("fullscreen".into(), "Toggle full screen".into()),
-            ]
-        } else if page == Some(0) {
-            vec![
-                ("fullscreen".into(), "Toggle full screen".into()),
-                (
-                    "motion".into(),
-                    format!("Animation: {}", if self.motion { "On" } else { "Off" }),
-                ),
-            ]
-        } else {
-            let is_saved = self
-                .saved
-                .contains(&(self.selected().id.clone(), self.slot));
-            vec![
-                ("slot".into(), "Choose next slot".into()),
-                (
-                    "resume".into(),
-                    format!(
-                        "Resume selected slot ({})",
-                        if is_saved { "Saved" } else { "Empty" }
-                    ),
-                ),
-                ("save".into(), "Save current session to this slot".into()),
-            ]
-        };
-        if self.panel == "message" {
-            let message = self.message.clone();
-            for line in wrap_text(&self.art, &message, "s", 770.0) {
-                self.art
-                    .text(canvas, &line, 640.0, y, "s", Color::WHITE, 790.0, false);
-                y += 32.0;
-            }
-        } else {
-            let selected = self.selected().clone();
-            let body: Vec<String> = match page {
-                Some(2) => vec![
-                    if self.art.languages.len() > 1 {
-                        "Choose the language for Clover menu labels.".into()
-                    } else {
-                        "Re-import this image to add all shipped language files.".into()
-                    },
-                    "Game titles, regional artwork and custom controls are unchanged.".into(),
-                ],
-                Some(3) => vec![
-                    format!("{}    {}", selected.publisher, selected.release),
-                    selected.copyright.clone(),
-                    "Core: ares (embedded, no external emulator)".into(),
-                ],
-                Some(4) => vec![
-                    "Arrows: select    Return: start    Tab: sort".into(),
-                    "Up: toolbar    Down: suspend points".into(),
-                    "Z B, X A, A Y, S X, Q L, W R".into(),
-                    "Escape: pause and pick a suspend slot; F5/F8: save/load".into(),
-                ],
-                _ if self.panel == "profiles" => vec![
-                    "Choose a verified cached profile, or import another NES / SNES Classic image."
-                        .into(),
-                    "The source image is read-only; extracted programs are never run.".into(),
-                ],
-                _ if settings => {
-                    vec!["Keyboard: arrows select; Return chooses; Escape closes.".into()]
-                }
-                _ => vec![
-                    format!(
-                        "Slot {} - {}",
-                        self.slot + 1,
-                        if self.saved.contains(&(selected.id.clone(), self.slot)) {
-                            "Saved"
-                        } else {
-                            "Empty"
-                        }
-                    ),
-                    "Suspend points use this profile's data directory.".into(),
-                ],
-            };
-            for line in body {
-                self.art
-                    .text(canvas, &line, 640.0, y, "m", Color::WHITE, 790.0, true);
-                y += 38.0;
-            }
-        }
-        self.focus = self.focus.min(entries.len());
-        self.actions = entries.iter().map(|(action, _)| action.clone()).collect();
-        let visible_count = entries
-            .len()
-            .min(((530.0 - y) / 24.0).floor().max(1.0) as usize);
-        let first_row = self
-            .focus
-            .saturating_add(1)
-            .saturating_sub(visible_count)
-            .min(entries.len().saturating_sub(visible_count));
-        let row_height = 43.0_f32
-            .min((530.0 - y) / visible_count.max(1) as f32)
-            .max(24.0);
-        for (index, (action, label)) in entries
-            .into_iter()
-            .enumerate()
-            .skip(first_row)
-            .take(visible_count)
-        {
-            let rect = FRect::new(365.0, y - 14.0, 550.0, row_height);
-            if self.focus == index || self.hover == action {
-                self.art.sprite(
-                    canvas,
-                    "btn_init_on",
-                    640.0,
-                    rect.y + rect.h * 0.5,
-                    570.0,
-                    row_height - 1.0,
-                    Color::WHITE,
-                );
-            }
-            self.art.text(
-                canvas,
-                &label,
-                640.0,
-                rect.y + rect.h * 0.5,
-                "m",
-                Color::WHITE,
-                520.0,
-                true,
-            );
-            self.hit(action.clone(), rect);
-            y += row_height;
-        }
-        let cancellation_view = if import_notice {
-            self.import_cancellation_view()
-        } else {
-            crate::ui::launcher::import_worker::CancellationView::Unavailable
-        };
-        let (import_footer_label, footer_action) = import_footer(cancellation_view);
-        let back = if import_notice {
-            import_footer_label.to_owned()
-        } else {
-            self.art.translate("sys_option_hud_Return", "Back")
-        };
-        let back_width = self.art.measure(&back, "s").advance;
-        let total = 40.0 + back_width;
-        self.art.sprite(
-            canvas,
-            "icon_B_light",
-            640.0 - total * 0.5 + 18.0,
-            567.0,
-            36.0,
-            36.0,
-            Color::WHITE,
-        );
-        self.art.text(
-            canvas,
-            &back,
-            640.0 - total * 0.5 + 40.0 + back_width * 0.5,
-            567.0,
-            "s",
-            Color::WHITE,
-            1200.0,
-            true,
-        );
-        if let Some(action) = footer_action {
-            self.hit(
-                action,
-                FRect::new(640.0 - total * 0.5 - 12.0, 543.0, total + 24.0, 48.0),
-            );
-            self.actions.push(action.into());
-        } else if !import_notice {
-            self.hit(
-                "close",
-                FRect::new(640.0 - total * 0.5 - 12.0, 543.0, total + 24.0, 48.0),
-            );
-            self.actions.push("close".into());
+            &scene,
+            &projected.bindings,
+            &mut self.hits,
+            &mut self.actions,
+        ) {
+            self.focus = projected.focus;
         }
     }
 

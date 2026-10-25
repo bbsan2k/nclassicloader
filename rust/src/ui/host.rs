@@ -180,11 +180,10 @@ impl App {
                 self.menu_focus = MenuFocus::Games;
                 let (x, y) = to_stage(canvas, x, y);
                 self.hover.clear();
-                for hit in self.hits.iter().rev() {
-                    if point_inside(x, y, hit.rect) {
-                        self.hover = hit.action.clone();
-                        break;
-                    }
+                if let Some(hit) = crate::frontend::menu_frame::last_hit(&self.hits, x, y, |hit| {
+                    from_frect(hit.rect)
+                }) {
+                    self.hover = hit.action.clone();
                 }
             }
             Event::MouseWheel { y, .. } if !self.playing && self.panel == "toolbar:3" => {
@@ -200,12 +199,10 @@ impl App {
                 ..
             } if !self.playing => {
                 let (x, y) = to_stage(canvas, x, y);
-                let action = self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|hit| point_inside(x, y, hit.rect))
-                    .map(|hit| hit.action.clone());
+                let action = crate::frontend::menu_frame::last_hit(&self.hits, x, y, |hit| {
+                    from_frect(hit.rect)
+                })
+                .map(|hit| hit.action.clone());
                 if let Some(action) = action {
                     self.activate(&action, canvas);
                     if clicks >= 2 && action.starts_with("game:") {

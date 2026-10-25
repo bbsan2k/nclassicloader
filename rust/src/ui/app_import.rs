@@ -597,8 +597,10 @@ mod tests {
         controller
             .start_with(current.clone(), move |_, control, _| {
                 control.start().unwrap();
-                worker_entered.wait();
                 control.begin_commit().unwrap();
+                // Readiness must mean the commit boundary has been crossed;
+                // otherwise the caller can still legitimately cancel first.
+                worker_entered.wait();
                 worker_release.wait();
                 control.finish_success();
                 Ok(profile())

@@ -4,6 +4,8 @@ use super::*;
 use fontdue::{Font, FontSettings, Metrics};
 #[path = "flags.rs"]
 mod flags;
+#[path = "projection.rs"]
+mod projection;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PrimaryButton {
@@ -39,36 +41,25 @@ fn primary_button(
     }
 }
 
-pub const WIDTH: u32 = 1200;
-pub const HEIGHT: u32 = 760;
-pub const PAGE_SIZE: usize = 6;
-const INK: Color = Color::RGB(236, 242, 245);
-const MUTED: Color = Color::RGB(156, 171, 186);
-const ACCENT: Color = Color::RGB(94, 234, 210);
+pub use crate::frontend::launcher_scene::{HEIGHT, PAGE_SIZE, WIDTH};
 
 pub const BUTTONS: [FRect; 3] = [
-    FRect {
-        x: 866.0,
-        y: 650.0,
-        w: 294.0,
-        h: 58.0,
-    },
-    FRect {
-        x: 24.0,
-        y: 285.0,
-        w: 192.0,
-        h: 48.0,
-    },
-    FRect {
-        x: 24.0,
-        y: 342.0,
-        w: 192.0,
-        h: 48.0,
-    },
+    sdl_rect(crate::frontend::launcher_scene::BUTTONS[0]),
+    sdl_rect(crate::frontend::launcher_scene::BUTTONS[1]),
+    sdl_rect(crate::frontend::launcher_scene::BUTTONS[2]),
 ];
 
 pub fn row_rect(row: usize) -> FRect {
-    FRect::new(264.0, 194.0 + row as f32 * 72.0, 556.0, 62.0)
+    sdl_rect(crate::frontend::launcher_scene::row_rect(row))
+}
+
+pub(super) const fn sdl_rect(rect: crate::frontend::launcher_scene::Rect) -> FRect {
+    FRect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+    }
 }
 
 struct Glyph {
@@ -215,6 +206,36 @@ impl View {
         Ok(())
     }
 
+    fn draw_commands(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        commands: impl IntoIterator<Item = crate::frontend::launcher_scene::DrawCommand>,
+    ) -> Result<(), String> {
+        use crate::frontend::launcher_scene::{DrawCommand, FontRole};
+        for command in commands {
+            match command {
+                DrawCommand::Geometry(geometry) => draw_geometry(canvas, [geometry]),
+                DrawCommand::Flag { region, rect } => {
+                    self.flags.draw(canvas, region, sdl_rect(rect))
+                }
+                DrawCommand::Text(text) => self.text(
+                    canvas,
+                    &text.value,
+                    text.x,
+                    text.y,
+                    text.size,
+                    match text.font {
+                        FontRole::Regular => false,
+                        FontRole::Semibold => true,
+                    },
+                    Color::RGBA(text.color.r, text.color.g, text.color.b, text.color.a),
+                    text.max_width,
+                )?,
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -231,526 +252,40 @@ impl View {
         controller_connected: bool,
         elapsed: f32,
     ) -> Result<(), String> {
+        let presentation = projection::project(
+            entries,
+            selected,
+            busy,
+            cancel,
+            status,
+            error,
+            hover,
+            focus,
+            filter_label,
+            controller_connected,
+            elapsed,
+        );
+        let scene = crate::frontend::launcher_presentation::compose(&presentation);
+        self.draw_scene(canvas, &scene)
+    }
+
+    fn draw_scene(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        scene: &crate::frontend::launcher_presentation::Scene,
+    ) -> Result<(), String> {
         canvas.set_blend_mode(BlendMode::Blend);
-        // A restrained diagonal wash, rendered as geometry rather than an image.
-        for y in 0..HEIGHT {
-            let t = y as f32 / HEIGHT as f32;
-            fill(
-                canvas,
-                FRect::new(0.0, y as f32, WIDTH as f32, 1.0),
-                Color::RGB(
-                    (20.0 - 7.0 * t) as u8,
-                    (30.0 - 10.0 * t) as u8,
-                    (43.0 - 13.0 * t) as u8,
-                ),
-            );
-        }
-        fill(
-            canvas,
-            FRect::new(0.0, 0.0, 240.0, HEIGHT as f32),
-            Color::RGBA(10, 16, 24, 225),
-        );
-        fill(
-            canvas,
-            FRect::new(239.0, 0.0, 1.0, HEIGHT as f32),
-            Color::RGB(39, 52, 65),
-        );
-        self.text(canvas, "CLOVER", 28.0, 35.0, 32, true, INK, 180.0)?;
-        self.text(
-            canvas,
-            "CLASSIC MENU / RUST",
-            29.0,
-            77.0,
-            12,
-            true,
-            ACCENT,
-            190.0,
-        )?;
-        fill(canvas, FRect::new(28.0, 122.0, 36.0, 3.0), ACCENT);
-        self.text(
-            canvas,
-            "A classic, reimagined.",
-            28.0,
-            146.0,
-            17,
-            false,
-            MUTED,
-            190.0,
-        )?;
-
-        panel(
-            canvas,
-            FRect::new(16.0, 215.0, 208.0, 48.0),
-            Color::RGB(28, 46, 55),
-            8.0,
-        );
-        fill(canvas, FRect::new(16.0, 230.0, 3.0, 18.0), ACCENT);
-        self.text(canvas, "Your library", 38.0, 226.0, 19, true, ACCENT, 164.0)?;
-        for (index, label) in [(1, "+  Import image"), (2, "Open data folder")] {
-            let active = hover.is_some_and(|(x, y)| point_inside(x, y, BUTTONS[index]))
-                || focus == Some(index);
-            if active && !busy {
-                panel(canvas, BUTTONS[index], Color::RGB(35, 49, 64), 8.0);
-            }
-            self.text(
-                canvas,
-                label,
-                38.0,
-                BUTTONS[index].y + 12.0,
-                18,
-                false,
-                if busy { MUTED } else { INK },
-                172.0,
-            )?;
-        }
-        self.text(
-            canvas,
-            "LOCAL. PRIVATE. YOURS.",
-            28.0,
-            590.0,
-            12,
-            true,
-            ACCENT,
-            190.0,
-        )?;
-        self.text(
-            canvas,
-            "Your images stay read-only.",
-            28.0,
-            618.0,
-            15,
-            false,
-            MUTED,
-            192.0,
-        )?;
-        self.text(
-            canvas,
-            "Saves live separately.",
-            28.0,
-            640.0,
-            15,
-            false,
-            MUTED,
-            192.0,
-        )?;
-        self.text(canvas, "SDL3 + ares", 28.0, 714.0, 14, false, MUTED, 192.0)?;
-
-        self.text(
-            canvas,
-            "MAKE YOURSELF AT HOME",
-            272.0,
-            35.0,
-            13,
-            true,
-            ACCENT,
-            700.0,
-        )?;
-        self.text(
-            canvas,
-            "Choose your Classic.",
-            270.0,
-            59.0,
-            42,
-            true,
-            INK,
-            850.0,
-        )?;
-        self.text(
-            canvas,
-            "Pick a region and version, or bring your own filesystem image.",
-            272.0,
-            118.0,
-            18,
-            false,
-            MUTED,
-            870.0,
-        )?;
-        self.text(
-            canvas,
-            &format!("YOUR LIBRARY  /  {} SOURCES", entries.len()),
-            530.0,
-            154.0,
-            12,
-            true,
-            MUTED,
-            285.0,
-        )?;
-        for (label, rect) in ["ALL", "NES", "SNES"].into_iter().zip(FILTER_TABS) {
-            let active = label == filter_label;
-            let hot = hover.is_some_and(|(x, y)| point_inside(x, y, rect));
-            panel(
-                canvas,
-                rect,
-                if active {
-                    ACCENT
-                } else if hot && !busy {
-                    Color::RGB(45, 66, 80)
-                } else {
-                    Color::RGB(29, 44, 58)
-                },
-                6.0,
-            );
-            self.text(
-                canvas,
-                label,
-                rect.x + 14.0,
-                rect.y + 6.0,
-                13,
-                true,
-                if active { Color::RGB(12, 35, 38) } else { INK },
-                52.0,
-            )?;
-        }
-        let page = selected / PAGE_SIZE;
-        for (row, entry) in entries
-            .iter()
-            .skip(page * PAGE_SIZE)
-            .take(PAGE_SIZE)
-            .enumerate()
-        {
-            let rect = row_rect(row);
-            let chosen = page * PAGE_SIZE + row == selected;
-            let hot = hover.is_some_and(|(x, y)| point_inside(x, y, rect));
-            if chosen {
-                panel(canvas, rect, ACCENT, 9.0);
-            }
-            let inside = if chosen {
-                FRect::new(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0)
-            } else {
-                rect
-            };
-            panel(
-                canvas,
-                inside,
-                if chosen {
-                    Color::RGB(28, 51, 60)
-                } else if hot && !busy {
-                    Color::RGB(36, 49, 65)
-                } else {
-                    Color::RGB(25, 36, 49)
-                },
-                8.0,
-            );
-            let (title, region, version) = identity(entry);
-            self.text(
-                canvas,
-                system_label(entry),
-                rect.x + 438.0,
-                rect.y + 14.0,
-                12,
-                true,
-                if chosen { ACCENT } else { MUTED },
-                70.0,
-            )?;
-            panel(
-                canvas,
-                FRect::new(rect.x + 14.0, rect.y + 12.0, 48.0, 38.0),
-                if chosen {
-                    Color::RGB(54, 83, 88)
-                } else {
-                    Color::RGB(41, 54, 69)
-                },
-                6.0,
-            );
-            self.flags.draw(
-                canvas,
-                &region,
-                FRect::new(rect.x + 22.0, rect.y + 20.0, 32.0, 24.0),
-            );
-            self.text(
-                canvas,
-                &title,
-                rect.x + 78.0,
-                rect.y + 8.0,
-                20,
-                true,
-                INK,
-                340.0,
-            )?;
-            let kind = if matches!(entry, Entry::Cached(_)) {
-                "Ready to play"
-            } else {
-                "Filesystem image"
-            };
-            self.text(
-                canvas,
-                &format!("{version}  ·  {kind}"),
-                rect.x + 78.0,
-                rect.y + 35.0,
-                14,
-                false,
-                MUTED,
-                445.0,
-            )?;
-            if chosen {
-                self.text(
-                    canvas,
-                    "›",
-                    rect.x + 523.0,
-                    rect.y + 13.0,
-                    27,
-                    true,
-                    ACCENT,
-                    22.0,
-                )?;
+        self.draw_commands(canvas, scene.before_status.iter().cloned())?;
+        let mut status_text =
+            crate::frontend::launcher_status::StatusText::new(&scene.status, scene.error);
+        while let Some(candidate) = status_text.candidate() {
+            let width = self.width(candidate, 15, false);
+            if let Some(command) = status_text.advance(width) {
+                self.draw_commands(canvas, [command])?;
             }
         }
-        if entries.is_empty() {
-            let empty_title = if filter_label == "ALL" {
-                "Your library starts here.".to_owned()
-            } else {
-                format!("No {filter_label} versions found.")
-            };
-            panel(
-                canvas,
-                FRect::new(264.0, 194.0, 556.0, 422.0),
-                Color::RGB(25, 36, 49),
-                10.0,
-            );
-            self.text(canvas, &empty_title, 294.0, 265.0, 28, true, INK, 490.0)?;
-            self.text(
-                canvas,
-                "Import a supplied .hsqs or .tar.gz image to begin.",
-                294.0,
-                317.0,
-                18,
-                false,
-                MUTED,
-                490.0,
-            )?;
-            self.text(
-                canvas,
-                "Already have game data? Open its assets folder.",
-                294.0,
-                347.0,
-                18,
-                false,
-                MUTED,
-                490.0,
-            )?;
-            self.text(
-                canvas,
-                "No game files are included or downloaded.",
-                294.0,
-                530.0,
-                16,
-                false,
-                MUTED,
-                490.0,
-            )?;
-        }
-
-        panel(
-            canvas,
-            FRect::new(844.0, 194.0, 332.0, 422.0),
-            Color::RGB(23, 34, 47),
-            12.0,
-        );
-        let entry = entries.get(selected).copied();
-        match entry.map(console) {
-            Some(Console::Nes) => nes_controller(canvas, 1010.0, 272.0, false),
-            Some(Console::Famicom) => nes_controller(canvas, 1010.0, 272.0, true),
-            Some(Console::Snes) => snes_controller(canvas, 1010.0, 272.0),
-            _ => {
-                panel(
-                    canvas,
-                    FRect::new(966.0, 234.0, 88.0, 76.0),
-                    Color::RGB(43, 59, 77),
-                    12.0,
-                );
-                self.text(canvas, "?", 993.0, 242.0, 44, true, MUTED, 50.0)?;
-            }
-        }
-        let (title, region, version) = entry.map(identity).unwrap_or_else(|| {
-            (
-                "Classic Menu".into(),
-                "ALL".into(),
-                "Your region. Your version.".into(),
-            )
-        });
-        self.text(canvas, &title, 866.0, 353.0, 25, true, INK, 290.0)?;
-        self.text(canvas, &version, 866.0, 390.0, 16, false, MUTED, 290.0)?;
-        let ready = matches!(entry, Some(Entry::Cached(_)));
-        let badge = if ready {
-            "VERIFIED CACHE"
-        } else if entry.is_some() {
-            "READY TO IMPORT"
-        } else {
-            "AWAITING GAME DATA"
-        };
-        self.text(canvas, badge, 866.0, 433.0, 12, true, ACCENT, 290.0)?;
-        fill(
-            canvas,
-            FRect::new(866.0, 464.0, 286.0, 1.0),
-            Color::RGB(48, 62, 76),
-        );
-        self.text(canvas, "REGION", 866.0, 482.0, 11, true, MUTED, 120.0)?;
-        self.flags
-            .draw(canvas, &region, FRect::new(866.0, 505.0, 24.0, 18.0));
-        self.text(
-            canvas,
-            flags::Region::from_marker(&region).label(),
-            902.0,
-            503.0,
-            16,
-            true,
-            INK,
-            102.0,
-        )?;
-        self.text(canvas, "SOURCE", 1014.0, 482.0, 11, true, MUTED, 130.0)?;
-        self.text(
-            canvas,
-            if ready {
-                "Local cache"
-            } else if entry.is_some() {
-                "Local image"
-            } else {
-                "Not selected"
-            },
-            1014.0,
-            503.0,
-            18,
-            true,
-            INK,
-            140.0,
-        )?;
-        let source = entry
-            .map(|entry| match entry {
-                Entry::Cached(profile) => profile.directory.display().to_string(),
-                Entry::Image(path) => path.display().to_string(),
-            })
-            .unwrap_or_else(|| "Use Import image or Open data folder.".into());
-        self.text(canvas, &source, 866.0, 550.0, 13, false, MUTED, 286.0)?;
-        self.text(
-            canvas,
-            if ready {
-                "No original image needed."
-            } else {
-                "Imported locally. Never executed."
-            },
-            866.0,
-            576.0,
-            14,
-            false,
-            MUTED,
-            286.0,
-        )?;
-
-        let button = primary_button(busy, cancel, entry.is_some(), ready);
-        let primary_hot = button.enabled
-            && (hover.is_some_and(|(x, y)| point_inside(x, y, BUTTONS[0])) || focus == Some(0));
-        let enabled = button.enabled;
-        panel(
-            canvas,
-            BUTTONS[0],
-            if !enabled {
-                Color::RGB(43, 57, 68)
-            } else if primary_hot {
-                Color::RGB(143, 249, 226)
-            } else {
-                ACCENT
-            },
-            9.0,
-        );
-        self.text(
-            canvas,
-            button.label,
-            890.0,
-            666.0,
-            21,
-            true,
-            if enabled {
-                Color::RGB(12, 35, 38)
-            } else {
-                MUTED
-            },
-            245.0,
-        )?;
-        self.text(
-            canvas,
-            &format!(
-                "{} / {}",
-                if entries.is_empty() { 0 } else { page + 1 },
-                entries.len().div_ceil(PAGE_SIZE)
-            ),
-            272.0,
-            626.0,
-            13,
-            false,
-            MUTED,
-            100.0,
-        )?;
-        let color = if error {
-            Color::RGB(255, 163, 156)
-        } else {
-            MUTED
-        };
-        // Wrap status by actual glyph widths rather than losing import errors.
-        let mut line = String::new();
-        let mut y = 657.0;
-        for word in status.split_whitespace() {
-            let candidate = format!("{line} {word}");
-            if self.width(&candidate, 15, false) > 550.0 && !line.is_empty() {
-                self.text(canvas, &line, 272.0, y, 15, false, color, 550.0)?;
-                y += 21.0;
-                line.clear();
-                if y > 700.0 {
-                    break;
-                }
-            }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-        self.text(canvas, &line, 272.0, y, 15, false, color, 550.0)?;
-        if busy {
-            panel(
-                canvas,
-                FRect::new(272.0, 640.0, 548.0, 3.0),
-                Color::RGB(43, 61, 74),
-                1.0,
-            );
-            let offset = (elapsed * 170.0).rem_euclid(420.0);
-            fill(
-                canvas,
-                FRect::new(272.0 + offset, 640.0, 128.0, 3.0),
-                ACCENT,
-            );
-        }
-        let footer = if !busy {
-            if controller_connected {
-                "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen"
-            } else {
-                "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen"
-            }
-        } else {
-            match (cancel, controller_connected) {
-                (CancellationView::Available, true) => {
-                    "East  Cancel import    Waiting for a safe stopping point    F11  Full screen"
-                }
-                (CancellationView::Available, false) => {
-                    "Escape  Cancel import    Waiting for a safe stopping point    F11  Full screen"
-                }
-                (CancellationView::Requested, true) => {
-                    "Cancellation requested    Waiting for a safe stopping point    F11  Full screen"
-                }
-                (CancellationView::Requested, false) => {
-                    "Cancellation requested    Waiting for a safe stopping point    F11  Full screen"
-                }
-                (CancellationView::Finishing, _) => {
-                    "Finishing import    Cancellation is too late    F11  Full screen"
-                }
-                (CancellationView::Unavailable, true) => {
-                    "D-pad / Stick  Navigate    South / Start  Confirm    East  Back    Shoulders  System    F11  Full screen"
-                }
-                (CancellationView::Unavailable, false) => {
-                    "Up / Down  Select    Enter  Launch    1 / 2 / 3  System    I  Import    D  Folder    F11  Full screen"
-                }
-            }
-        };
-        self.text(canvas, footer, 272.0, 728.0, 13, false, MUTED, 880.0)?;
-        Ok(())
+        self.draw_commands(canvas, [status_text.finish()])?;
+        self.draw_commands(canvas, scene.after_status.iter().cloned())
     }
 }
 
@@ -922,75 +457,29 @@ pub(super) fn release_key(entry: &Entry) -> Option<(String, String, String)> {
     Some((title, region, version.to_owned()))
 }
 
-fn nes_controller(canvas: &mut Canvas<Window>, x: f32, y: f32, famicom: bool) {
-    // Original vector illustration: no imported console artwork is bundled.
-    let shell = if famicom {
-        Color::RGB(150, 40, 49)
-    } else {
-        Color::RGB(190, 198, 204)
-    };
-    let face = if famicom {
-        Color::RGB(205, 179, 111)
-    } else {
-        Color::RGB(31, 39, 46)
-    };
-    let dark = Color::RGB(17, 25, 32);
-    panel(
-        canvas,
-        FRect::new(x - 120.0, y - 43.0, 240.0, 94.0),
-        Color::RGB(13, 24, 35),
-        8.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 118.0, y - 49.0, 236.0, 94.0),
-        shell,
-        6.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 108.0, y - 39.0, 216.0, 74.0),
-        face,
-        3.0,
-    );
-    for dy in [-25.0, -15.0, -5.0, 26.0] {
-        panel(
-            canvas,
-            FRect::new(x - 24.0, y + dy, 65.0, 5.0),
-            if famicom {
-                shell
-            } else {
-                Color::RGB(85, 97, 107)
-            },
-            2.0,
-        );
-    }
-    panel(canvas, FRect::new(x - 91.0, y - 6.0, 47.0, 15.0), dark, 2.0);
-    panel(
-        canvas,
-        FRect::new(x - 75.0, y - 22.0, 15.0, 47.0),
-        dark,
-        2.0,
-    );
-    for dx in [-18.0, 13.0] {
-        panel(
-            canvas,
-            FRect::new(x + dx, y + 10.0, 22.0, 8.0),
-            Color::RGB(109, 122, 132),
-            4.0,
-        );
-    }
-    for dx in [60.0, 89.0] {
-        panel(
-            canvas,
-            FRect::new(x + dx - 13.0, y - 1.0, 26.0, 26.0),
-            if famicom {
-                shell
-            } else {
-                Color::RGB(215, 50, 61)
-            },
-            13.0,
-        );
+fn draw_geometry(
+    canvas: &mut Canvas<Window>,
+    commands: impl IntoIterator<Item = crate::frontend::launcher_scene::GeometryCommand>,
+) {
+    use crate::frontend::launcher_scene::GeometryCommand;
+    for command in commands {
+        match command {
+            GeometryCommand::FillRect { rect, color } => fill(
+                canvas,
+                sdl_rect(rect),
+                Color::RGBA(color.r, color.g, color.b, color.a),
+            ),
+            GeometryCommand::RoundedRect {
+                rect,
+                color,
+                radius,
+            } => panel(
+                canvas,
+                sdl_rect(rect),
+                Color::RGBA(color.r, color.g, color.b, color.a),
+                radius,
+            ),
+        }
     }
 }
 
@@ -1024,60 +513,6 @@ fn panel(canvas: &mut Canvas<Window>, rect: FRect, color: Color, radius: f32) {
                 1.0,
             ),
             color,
-        );
-    }
-}
-
-fn snes_controller(canvas: &mut Canvas<Window>, x: f32, y: f32) {
-    panel(
-        canvas,
-        FRect::new(x - 118.0, y - 42.0, 236.0, 94.0),
-        Color::RGB(13, 24, 35),
-        42.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 114.0, y - 48.0, 228.0, 94.0),
-        Color::RGB(59, 76, 94),
-        42.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 106.0, y - 40.0, 212.0, 78.0),
-        Color::RGB(43, 59, 77),
-        34.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 84.0, y - 8.0, 48.0, 16.0),
-        Color::RGB(18, 29, 41),
-        3.0,
-    );
-    panel(
-        canvas,
-        FRect::new(x - 68.0, y - 24.0, 16.0, 48.0),
-        Color::RGB(18, 29, 41),
-        3.0,
-    );
-    for (dx, dy, color) in [
-        (60.0, -18.0, Color::RGB(146, 142, 221)),
-        (81.0, 1.0, Color::RGB(94, 234, 210)),
-        (39.0, 1.0, Color::RGB(91, 170, 194)),
-        (60.0, 20.0, Color::RGB(214, 147, 179)),
-    ] {
-        panel(
-            canvas,
-            FRect::new(x + dx - 10.0, y + dy - 10.0, 20.0, 20.0),
-            color,
-            10.0,
-        );
-    }
-    for dx in [-14.0, 9.0] {
-        panel(
-            canvas,
-            FRect::new(x + dx, y + 4.0, 17.0, 6.0),
-            Color::RGB(131, 151, 168),
-            3.0,
         );
     }
 }
@@ -1213,3 +648,7 @@ mod tests {
         assert!(BUTTONS[1].x + BUTTONS[1].w < row_rect(0).x);
     }
 }
+
+#[cfg(test)]
+#[path = "recreation_tests.rs"]
+mod recreation_tests;

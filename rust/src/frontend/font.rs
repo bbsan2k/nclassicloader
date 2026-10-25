@@ -49,6 +49,54 @@ pub struct TextLayout {
     pub bottom: f32,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TextPlacement {
+    pub left: f32,
+    pub top: f32,
+    pub scale: f32,
+}
+
+impl TextPlacement {
+    /// Returns this glyph's destination rectangle without changing its atlas source.
+    pub fn glyph_rect(self, glyph: &PlacedGlyph) -> Rect {
+        Rect {
+            x: self.left + glyph.x * self.scale,
+            y: self.top + glyph.y * self.scale,
+            w: glyph.width * self.scale,
+            h: glyph.height * self.scale,
+        }
+    }
+}
+
+/// Apply the App's existing bitmap-text centering and maximum-width scaling.
+pub fn placement(
+    layout: &TextLayout,
+    x: f32,
+    y: f32,
+    max_width: f32,
+    line_anchor: bool,
+) -> TextPlacement {
+    let extent = if line_anchor {
+        layout.advance.max(layout.right)
+    } else {
+        layout.right - layout.left
+    };
+    let scale = (max_width / extent.max(1.0)).min(1.0);
+    let left = x
+        - (if line_anchor {
+            layout.advance * 0.5
+        } else {
+            (layout.left + layout.right) * 0.5
+        }) * scale;
+    let top = y
+        - (if line_anchor {
+            layout.line * 0.5
+        } else {
+            (layout.top + layout.bottom) * 0.5
+        }) * scale;
+    TextPlacement { left, top, scale }
+}
+
 /// Measure text with the skin font fallback and bitmap metric policy.
 pub fn measure(fonts: &BTreeMap<String, Font>, value: &str, primary_name: &str) -> TextLayout {
     let Some(primary) = fonts.get(primary_name) else {
@@ -201,7 +249,7 @@ pub fn decode(data: &Value) -> Font {
 
 #[cfg(test)]
 mod tests {
-    use super::{Font, Glyph, PlacedGlyph, Rect, TextLayout, decode, measure};
+    use super::{Font, Glyph, PlacedGlyph, Rect, TextLayout, decode, measure, placement};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -452,5 +500,93 @@ mod tests {
         let layout = measure(&fonts, &input, "p");
         assert_eq!(layout.glyphs.len(), 4096);
         assert_eq!(layout.advance, 4096.0);
+    }
+
+    #[test]
+    fn placement_preserves_line_and_ink_anchor_math_and_glyph_source() {
+        let layout = TextLayout {
+            glyphs: Vec::new(),
+            advance: 30.0,
+            line: 12.0,
+            left: -4.0,
+            top: -3.0,
+            right: 20.0,
+            bottom: 9.0,
+        };
+        assert_eq!(
+            placement(&layout, 50.0, 40.0, 100.0, true),
+            super::TextPlacement {
+                left: 35.0,
+                top: 34.0,
+                scale: 1.0,
+            }
+        );
+        assert_eq!(
+            placement(&layout, 50.0, 40.0, 12.0, false),
+            super::TextPlacement {
+                left: 46.0,
+                top: 38.5,
+                scale: 0.5,
+            }
+        );
+
+        let glyph = PlacedGlyph {
+            font: "fallback".into(),
+            source: Rect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            },
+            x: -2.0,
+            y: 5.0,
+            width: 6.0,
+            height: 8.0,
+        };
+        let place = placement(&layout, 50.0, 40.0, 12.0, false);
+        assert_eq!(
+            place.glyph_rect(&glyph),
+            Rect {
+                x: 45.0,
+                y: 41.0,
+                w: 3.0,
+                h: 4.0,
+            }
+        );
+        assert_eq!(
+            glyph.source,
+            Rect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0
+            }
+        );
+    }
+
+    #[test]
+    fn placement_keeps_empty_extent_no_upscale_and_nonfinite_arithmetic() {
+        let empty = TextLayout {
+            glyphs: Vec::new(),
+            advance: 0.0,
+            line: 0.0,
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        };
+        assert_eq!(
+            placement(&empty, 10.0, 20.0, 100.0, true),
+            super::TextPlacement {
+                left: 10.0,
+                top: 20.0,
+                scale: 1.0,
+            }
+        );
+        assert_eq!(placement(&empty, 10.0, 20.0, -4.0, false).scale, -4.0);
+        let nonfinite = placement(&empty, f32::NAN, f32::INFINITY, f32::INFINITY, false);
+        assert!(nonfinite.left.is_nan());
+        assert!(nonfinite.top.is_infinite());
+        assert_eq!(nonfinite.scale, 1.0);
     }
 }

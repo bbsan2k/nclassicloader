@@ -22,13 +22,7 @@ pub(in crate::ui) enum Action {
     Retired,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum CancellationView {
-    Unavailable,
-    Available,
-    Requested,
-    Finishing,
-}
+pub(in crate::ui) use crate::frontend::launcher_activity::CancellationView;
 
 #[derive(Default)]
 pub(super) struct Requests {
