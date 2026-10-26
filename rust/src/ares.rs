@@ -215,3 +215,19 @@ fn utf8_path(path: &Path) -> Result<CString, AresError> {
         .ok_or_else(|| AresError("Filesystem path cannot be represented as UTF-8".into()))?;
     CString::new(path).map_err(|_| AresError("Filesystem path contains a NUL byte".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AresSession;
+
+    #[test]
+    fn core_only_feature_links_and_owns_an_unloaded_session() {
+        let mut session = AresSession::new().expect("native core archive should link and allocate");
+        assert!(!session.is_loaded());
+        assert!(session.frame().is_none());
+        assert!(session.audio().is_empty());
+        assert!(session.run_frame(0).is_err());
+        drop(session);
+        assert!(!AresSession::new().unwrap().is_loaded());
+    }
+}

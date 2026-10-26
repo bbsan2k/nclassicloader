@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+if(CMAKE_HOST_APPLE AND NOT CMAKE_SYSTEM_NAME MATCHES "^(iOS|tvOS)$" AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
 endif()
 if(WIN32 OR CMAKE_HOST_WIN32)
@@ -13,7 +13,7 @@ if(APPLE)
 endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-option(CLOVER_BUILD_TESTS "Build native ares and macOS menu-adapter tests" ON)
+option(CLOVER_BUILD_TESTS "Build native core, menu-adapter and shared Apple input tests" ON)
 
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/ares/ares/sfc/sfc.hpp" OR NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
   message(FATAL_ERROR "Run python3 scripts/bootstrap-portable.py first (pinned build sources)")
@@ -35,11 +35,20 @@ add_custom_target(clover_native_libraries ALL DEPENDS clover_ares SDL3-static)
 
 if(CLOVER_BUILD_TESTS)
   enable_testing()
+  if(NOT CMAKE_SYSTEM_NAME MATCHES "^(iOS|tvOS)$")
+    foreach(input_test input touch)
+      add_executable(clover_apple_${input_test}_tests portable/apple/tests/${input_test}_tests.cpp)
+      target_link_libraries(clover_apple_${input_test}_tests PRIVATE SDL3::SDL3-static)
+      add_test(NAME clover_apple_${input_test}_tests COMMAND clover_apple_${input_test}_tests)
+      set_tests_properties(clover_apple_${input_test}_tests PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+    endforeach()
+  endif()
 endif()
 
-# This is intentionally the only application-side C++: AppKit has no stable C
-# interface for the macOS menu bar. Menu state and commands remain in Rust.
-if(APPLE)
+# Desktop AppKit has no stable C interface for the menu bar. The separate Apple
+# mobile host also uses Objective-C++; shared menu state and commands stay Rust.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   find_library(CLOVER_APPKIT AppKit REQUIRED)
   add_library(clover_native_menu STATIC portable/platform/macos_menu.mm)
   target_include_directories(clover_native_menu PUBLIC portable/platform)
@@ -54,7 +63,8 @@ if(APPLE)
 endif()
 
 # The Rust package owns the executable, importer, UI and settings. CMake only
-# supplies pinned native libraries and the notices needed by that package.
+# supplies pinned native libraries and notices for the desktop package. The
+# separate portable/apple project owns the experimental mobile app bundles.
 install(FILES LICENSE DESTINATION licenses RENAME project-LICENSE)
 install(FILES THIRD-PARTY-NOTICES.md dependencies.lock.json DESTINATION licenses)
 install(FILES third_party/ares/LICENSE DESTINATION licenses RENAME ares-LICENSE)

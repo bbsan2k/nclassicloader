@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Clover · Add a collection</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#eaf0fa;background:#101726;--muted:#aab9ce;--mint:#7aefbf;--line:#304057}*{box-sizing:border-box}body{margin:0;padding:40px 20px}main{max-width:760px;margin:auto}header{margin-bottom:28px}.brand{font-size:24px;font-weight:750;letter-spacing:-.7px}.brand span{color:var(--mint)}.eyebrow{color:var(--mint);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}h1{font-size:clamp(28px,5vw,40px);letter-spacing:-1px;line-height:1.15;margin:12px 0}h2{font-size:20px;margin:0}p{margin:10px 0;color:var(--muted)}.panel{border:1px solid var(--line);background:#172131;border-radius:20px;padding:24px;margin:16px 0}.heading{display:flex;align-items:center;gap:12px;margin-bottom:12px}.number{display:grid;place-items:center;border:1px solid var(--line);border-radius:50%;height:30px;width:30px;color:var(--mint);flex-shrink:0}.badge{margin-left:auto;font-size:12px;color:var(--mint);border:1px solid var(--line);border-radius:30px;padding:4px 10px}.connect{display:flex;align-items:end;gap:12px;margin-top:18px}label{display:block;font-size:14px;color:var(--muted)}input,button{font:inherit}#code{display:block;width:100%;max-width:260px;margin-top:6px;background:#101726;border:1px solid #52647e;border-radius:10px;color:#fff;padding:10px 14px;font:600 24px ui-monospace,monospace;letter-spacing:.15em}.connect label{flex:1}button{border:0;border-radius:10px;padding:12px 20px;font-weight:650;cursor:pointer;background:var(--mint);color:#082d21}button:disabled{opacity:.45;cursor:not-allowed}button.secondary{background:#29394e;color:#eaf0fa}button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:4px}.file{border:1px dashed #52647e;background:#101b2a;border-radius:12px;padding:20px;margin:18px 0}.file label{color:#eaf0fa;font-weight:600}#file{display:block;max-width:100%;margin-top:12px;font-size:14px;color:var(--muted)}#file::file-selector-button{border:0;border-radius:8px;background:#29394e;color:#eaf0fa;padding:10px 14px;margin-right:12px;font:inherit;cursor:pointer}.hint{font-size:13px}#file-info{overflow-wrap:anywhere}.actions{display:flex;gap:12px;flex-wrap:wrap}progress{width:100%;height:8px;accent-color:var(--mint);margin-top:22px}#status{color:#eaf0fa;overflow-wrap:anywhere}footer{font-size:13px;color:var(--muted);padding:8px 4px}footer strong{color:#d7e2f1}@media(max-width:480px){body{padding:24px 14px}.panel{padding:20px}.connect{align-items:stretch;flex-direction:column}#code{max-width:none}.badge{font-size:11px}.actions button{flex:1}}
+</style>
+<main>
+<header><div class="brand"><span>✦</span> clover</div><p class="eyebrow">Local transfer · Apple TV</p><h1>Your classics.<br>On the big screen.</h1><p>Add your own Classic collection in two steps. Keep Clover open on your TV until the import finishes.</p></header>
+<section class="panel" aria-labelledby="connect-title">
+  <div class="heading"><span class="number" aria-hidden="true">1</span><h2 id="connect-title">Connect to your TV</h2><span class="badge" id="connection">Not connected</span></div>
+  <p class="hint">Enter the six-digit code shown in Clover, or scan the TV’s QR code to connect automatically.</p>
+  <div class="connect"><label for="code">TV pairing code<input id="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code" spellcheck="false" placeholder="123 456"></label><button id="pair">Connect</button></div>
+</section>
+<section class="panel" aria-labelledby="upload-title">
+  <div class="heading"><span class="number" aria-hidden="true">2</span><h2 id="upload-title">Add a collection</h2></div>
+  <p class="hint">Choose a complete <strong>.hsqs filesystem image</strong> — not a kernel .img or an individual game ROM.</p>
+  <div class="file"><label for="file">Classic image · up to 1 GiB</label><input id="file" type="file" accept=".hsqs" aria-describedby="file-info"><p class="hint" id="file-info">Your original file stays on this device.</p></div>
+  <div class="actions"><button id="upload" disabled>Upload and import</button><button class="secondary" id="cancel" disabled>Cancel import</button></div>
+  <progress id="progress" value="0" max="1" aria-label="Collection transfer progress"></progress>
+  <p id="status" role="status" aria-live="polite">Connect to your TV to get started.</p>
+  <p class="hint" id="stage">After import, select the collection on your TV to open its Classic menu.</p>
+</section>
+<footer><strong>Only on your local network.</strong> HTTP transfers are not encrypted; use trusted Wi-Fi. No account or cloud upload. Keep your original image — tvOS may remove cached collections. Saves are not backed up yet.</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const limit=1024**3;
+let token='',sending=false,pairing=false,busy=false,online=false;
+const initialCode=location.hash.slice(1);
+history.replaceState(null,'',location.pathname);
+$('code').value=initialCode;
+function selectedFile(){return $('file').files[0];}
+function validFile(file){return file&&file.name.toLowerCase().endsWith('.hsqs')&&file.size>0&&file.size<=limit;}
+function controls(){
+  $('connection').textContent=token&&online?'Connected':'Not connected';
+  $('upload').disabled=!token||!online||busy||sending||!validFile(selectedFile());
+  $('cancel').disabled=!token||!online||!busy;
+  $('file').disabled=busy||sending;
+  $('pair').disabled=pairing||busy||sending;
+}
+function fileChanged(){
+  const file=selectedFile();
+  $('file-info').textContent=!file?'Your original file stays on this device.':validFile(file)?file.name+' · '+(file.size/1024**2).toFixed(1)+' MiB':'Choose a nonempty .hsqs image, up to 1 GiB.';
+  controls();
+}
+async function poll(){
+  if(!token)return;
+  try{
+    const r=await fetch('/status',{headers:{Authorization:'Bearer '+token}});
+    if(!r.ok){if(r.status===403)token='';throw Error(await r.text());}
+    const s=await r.json();online=true;busy=s.busy;
+    if(!sending){$('status').textContent=s.message;$('progress').value=s.total?s.received/s.total:0;}
+    $('stage').textContent=busy?'Keep Clover open. Importing can take a little longer after the upload completes.':'Select an imported collection on your TV to open its Classic menu.';
+  }catch(e){online=false;busy=false;$('status').textContent=e.message;}
+  controls();
+}
+async function pair(){
+  if(pairing||busy||sending)return;
+  const code=$('code').value.replace(/\s/g,'');
+  if(!/^[0-9]{6}$/.test(code)){$('status').textContent='Enter the six digits shown on the TV.';return;}
+  pairing=true;controls();$('status').textContent='Connecting to your TV…';
+  try{
+    const r=await fetch('/pair',{method:'POST',body:code});
+    if(!r.ok)throw Error(await r.text());
+    token=(await r.json()).token;$('code').value='';await poll();
+  }catch(e){$('status').textContent=e.message;}
+  finally{pairing=false;controls();}
+}
+$('pair').onclick=pair;
+$('code').onkeydown=e=>{if(e.key==='Enter')pair();};
+$('file').onchange=fileChanged;
+$('upload').onclick=()=>{
+  const file=selectedFile();
+  if(!token||!online||busy||sending)return;
+  if(!validFile(file)){$('status').textContent='Choose a nonempty .hsqs image, up to 1 GiB.';return;}
+  sending=true;controls();$('status').textContent='Uploading '+file.name+'…';
+  const xhr=new XMLHttpRequest();xhr.open('POST','/upload');xhr.setRequestHeader('Authorization','Bearer '+token);
+  xhr.upload.onprogress=e=>{
+    $('progress').value=e.lengthComputable?e.loaded/e.total:0;
+    if(e.lengthComputable){const percent=Math.round(e.loaded/e.total*100);$('status').textContent=percent<100?'Uploading · '+percent+'%':'Upload complete. Checking and importing your collection…';}
+  };
+  xhr.onload=()=>{sending=false;busy=false;if(xhr.status===403)token='';$('status').textContent=xhr.responseText;controls();poll();};
+  xhr.onerror=()=>{sending=false;online=false;busy=false;controls();$('status').textContent='Connection lost. Keep Clover open and reconnect using the current TV code.';};
+  xhr.send(file);
+};
+$('cancel').onclick=async()=>{try{const r=await fetch('/cancel',{method:'POST',headers:{Authorization:'Bearer '+token}});if(!r.ok)throw Error(await r.text());await poll();}catch(e){$('status').textContent=e.message;}};
+controls();setInterval(poll,1200);if(initialCode)pair();
+</script>
+</html>

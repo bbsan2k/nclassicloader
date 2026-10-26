@@ -2,6 +2,8 @@
 //! regional layout, carousel controls, and ares session all stay on this thread.
 
 mod app_import;
+#[cfg(feature = "apple-game")]
+pub(crate) mod apple;
 mod checks;
 mod controls;
 mod dialog_requests;
@@ -369,34 +371,11 @@ impl UiAssets {
         canvas: &mut Canvas<Window>,
         command: &crate::frontend::menu_scene::Command,
     ) -> bool {
-        use crate::frontend::menu_scene::{Command, Filter};
-
-        match command {
-            Command::Fill { rect, color } => {
-                canvas.set_draw_color(Color::RGBA(color.r, color.g, color.b, color.a));
-                let _ = canvas.fill_rect(to_frect(*rect));
-                true
-            }
-            Command::Texture(quad) => {
-                let Some(texture) = self.texture_mut(quad.texture) else {
-                    return false;
-                };
-                texture.set_color_mod(quad.tint.r, quad.tint.g, quad.tint.b);
-                texture.set_alpha_mod(quad.tint.a);
-                texture.set_scale_mode(match quad.filter {
-                    Filter::Nearest => ScaleMode::Nearest,
-                    Filter::Linear => ScaleMode::Linear,
-                });
-                let destination = to_frect(quad.destination);
-                let source = quad.source.map(to_frect);
-                if quad.flip_x {
-                    let _ = canvas.copy_ex(texture, source, destination, 0.0, None, true, false);
-                } else {
-                    let _ = canvas.copy(texture, source, destination);
-                }
-                true
-            }
-        }
+        let texture = match command {
+            crate::frontend::menu_scene::Command::Texture(quad) => self.texture_mut(quad.texture),
+            crate::frontend::menu_scene::Command::Fill { .. } => None,
+        };
+        crate::sdl_renderer::draw_command(canvas, command, texture)
     }
 
     fn draw_commands(
@@ -671,6 +650,9 @@ impl AudioOut {
 }
 
 struct App {
+    embedded: bool,
+    embedded_launch: Option<String>,
+    embedded_exit: bool,
     assets_path: PathBuf,
     data_path: PathBuf,
     profile_cache: PathBuf,
@@ -789,6 +771,26 @@ impl App {
         profile_cache: PathBuf,
         profile_home: PathBuf,
     ) -> Result<Self, String> {
+        Self::new_with_embedding(
+            canvas,
+            assets_path,
+            data_path,
+            gamepad_subsystem,
+            profile_cache,
+            profile_home,
+            false,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_embedding(
+        canvas: &Canvas<Window>,
+        assets_path: PathBuf,
+        data_path: PathBuf,
+        gamepad_subsystem: GamepadSubsystem,
+        profile_cache: PathBuf,
+        profile_home: PathBuf,
+        embedded: bool,
+    ) -> Result<Self, String> {
         fs::create_dir_all(&data_path)
             .map_err(|e| format!("Cannot create profile data directory: {e}"))?;
         let games = read_games(&assets_path)?;
@@ -806,17 +808,27 @@ impl App {
             .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| data_path.join("firmware"));
-        let profiles = crate::profile::list_profiles(&profile_cache);
+        let profiles = if embedded {
+            Vec::new()
+        } else {
+            crate::profile::list_profiles(&profile_cache)
+        };
         let (dialog_sender, dialog_receiver) = mpsc::channel();
-        let gamepad = gamepad_subsystem.gamepads().ok().and_then(|ids| {
-            ids.into_iter()
-                .find_map(|id| gamepad_subsystem.open(id).ok())
-        });
+        let gamepad = (!embedded)
+            .then(|| gamepad_subsystem.gamepads().ok())
+            .flatten()
+            .and_then(|ids| {
+                ids.into_iter()
+                    .find_map(|id| gamepad_subsystem.open(id).ok())
+            });
         let gamepad_id = gamepad
             .as_ref()
             .and_then(|pad| pad.id().ok())
             .map(u32::from);
         let mut app = Self {
+            embedded,
+            embedded_launch: None,
+            embedded_exit: false,
             assets_path: assets_path.clone(),
             data_path: data_path.clone(),
             profile_cache,
@@ -893,8 +905,12 @@ impl App {
         }
         app.sort_games();
         app.refresh_saves();
-        app.music = AudioOut::wav(&assets_path.join("skin/bgm_home.wav"));
-        app.click = AudioOut::wav(&assets_path.join("skin/se_sys_cursor.wav"));
+        if !embedded {
+            app.music = AudioOut::wav(&assets_path.join("skin/bgm_home.wav"));
+            app.click = AudioOut::wav(&assets_path.join("skin/se_sys_cursor.wav"));
+        } else {
+            app.sound = false;
+        }
         Ok(app)
     }
 
@@ -1138,6 +1154,22 @@ impl App {
 
     fn begin_game(&mut self, canvas: &Canvas<Window>) -> bool {
         let game = self.selected().clone();
+        if self.embedded {
+            if !game.firmware_required.is_empty()
+                || game.rom.is_empty()
+                || !game.import_error.is_empty()
+            {
+                self.panel = "message".into();
+                self.message = if !game.firmware_required.is_empty() {
+                    "This game needs external coprocessor firmware, which is not yet supported by the Apple host.".into()
+                } else {
+                    game.import_error.clone()
+                };
+                return false;
+            }
+            self.embedded_launch = Some(game.id);
+            return true;
+        }
         if !self.firmware_ready(&game) {
             self.panel = "message".into();
             self.message = format!(
@@ -1734,6 +1766,36 @@ impl App {
     }
 
     fn activate(&mut self, action: &str, canvas: &Canvas<Window>) {
+        if self.embedded {
+            if action == "profiles" {
+                self.embedded_exit = true;
+                return;
+            }
+            if matches!(
+                action,
+                "rom"
+                    | "firmware"
+                    | "import-image"
+                    | "fullscreen"
+                    | "sound"
+                    | "resume-panel"
+                    | "save"
+                    | "choose-suspend"
+                    | "resume"
+                    | "lock"
+                    | "delete"
+                    | "resume-pending"
+                    | "confirm-save"
+                    | "confirm-delete"
+                    | "cancel-suspend"
+            ) || action.starts_with("profile:")
+                || action.starts_with("suspend-slot:")
+            {
+                self.panel = "message".into();
+                self.message="Use Collections for importing and switching Classic images. Desktop file dialogs, menu audio and suspend slots are not yet available in this Apple host.".into();
+                return;
+            }
+        }
         if self.sound
             && let Some(click) = &self.click
         {

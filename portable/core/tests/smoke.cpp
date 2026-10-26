@@ -1,8 +1,10 @@
+#include "smoke_entry.h"
 #include "ares_core.h"
 #include "ares_c_api.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -78,10 +80,14 @@ static bool color(const clover::AresCore::Frame& frame, bool green) {
   });
 }
 
-int main() {
-  // Test artifacts stay under this test's working/build directory.
-  auto dir = fs::current_path() / ("ares-smoke-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+extern "C" int clover_snes_smoke(const char* artifact_root, char* error, size_t error_size) {
+  if(error && error_size) error[0] = '\0';
+  fs::path dir;
   try {
+    if(!artifact_root || !*artifact_root) throw std::invalid_argument("artifact root must be non-empty");
+    fs::path root(artifact_root);
+    if(!root.is_absolute()) throw std::invalid_argument("artifact root must be absolute");
+    dir = root / ("ares-smoke-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(dir);
     // Self-authored SPC700 BRA $FFC0 idle firmware: no Nintendo boot bytes.
     auto firmware=dir/"firmware";fs::create_directories(firmware);
@@ -174,7 +180,22 @@ int main() {
     std::cout << "Artifacts: " << dir << '\n';
     return 0;
   } catch(const std::exception& e) {
-    std::cerr << "FAIL: " << e.what() << "\nArtifacts: " << dir << '\n';
+    if(error && error_size) { std::snprintf(error, error_size, "%s", e.what()); error[error_size - 1] = '\0'; }
+#ifndef CLOVER_SMOKE_EMBEDDED
+    std::cerr << "FAIL: " << (error && error_size ? error : e.what()) << (dir.empty() ? "" : "\nArtifacts: " + dir.string()) << '\n';
+#endif
+    return 1;
+  } catch(...) {
+    if(error && error_size) { std::snprintf(error, error_size, "unknown exception"); error[error_size - 1] = '\0'; }
+#ifndef CLOVER_SMOKE_EMBEDDED
+    std::cerr << "FAIL: " << (error && error_size ? error : "unknown exception") << (dir.empty() ? "" : "\nArtifacts: " + dir.string()) << '\n';
+#endif
     return 1;
   }
 }
+#ifndef CLOVER_SMOKE_EMBEDDED
+int main() {
+  char error[1024] = {};
+  return clover_snes_smoke(fs::current_path().string().c_str(), error, sizeof(error));
+}
+#endif

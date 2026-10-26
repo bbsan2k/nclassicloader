@@ -9,7 +9,8 @@ assets retain their own terms; this file is an index, not a relicensing grant.
 * SDL3: zlib license in `third_party/SDL/LICENSE.txt`; the build package also
   includes the notices for the SDL HIDAPI and YUV-to-RGB components.
 * Rust dependency licenses, Barlow font notices, and flag SVG notices are
-  included in Rust desktop packages under `licenses/`. Source notices are
+  included in desktop packages under `licenses/` and Apple preview bundles under
+  their `licenses/` resource directory, alongside native dependency notices. Source notices are
   `rust/assets/fonts/OFL.txt` and `rust/assets/flags/LICENSE.txt`.
 
 Console system images, firmware, game ROMs, extracted artwork, fonts, music,

@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible problem without private or console content.
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not attach console images, ROMs, firmware, extracted assets, saves,
+        pairing codes or browser credentials. Report vulnerabilities privately
+        using SECURITY.md. Simulator tests are not physical-device evidence.
+  - type: input
+    id: revision
+    attributes:
+      label: Revision or version
+      placeholder: Output of git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and environment
+      description: OS, architecture, toolchain and simulator versus physical device.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps, expected behavior and actual behavior. Redact private paths and secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Build or test output only; no console content or credentials.

@@ -1,8 +1,11 @@
+#include "smoke_entry.h"
+#include "nes_fixture.h"
 #include "ares_core.h"
 #include "ares_c_api.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -27,53 +30,17 @@ static std::string utf8(const fs::path& path) {
   return {reinterpret_cast<const char*>(s.data()), s.size()};
 }
 
-// Self-authored 6502 code only. Poll both NES serial buttons, paint the
-// universal backdrop, play pulse 1, and record inputs plus a counter in SRAM.
-// Code lives in the fixed final 8 KiB common to all tested stock mappers.
-static Bytes homebrew(unsigned mapper, bool battery = false, bool chrRam = false) {
-  size_t chrSize = chrRam ? 0 : mapper == 184 ? 32768 : 8192;
-  Bytes rom(16 + 32768 + chrSize, 0);
-  rom[0] = 'N'; rom[1] = 'E'; rom[2] = 'S'; rom[3] = 0x1a;
-  rom[4] = 2; rom[5] = uint8_t(chrSize / 8192);
-  rom[6] = uint8_t((mapper << 4) | (battery ? 2 : 0));
-  rom[7] = uint8_t(mapper & 0xf0);
-  Bytes code;
-  auto emit = [&](std::initializer_list<uint8_t> b) { code.insert(code.end(), b); };
-  emit({0x78, 0xd8, 0xa2, 0xff, 0x9a, // sei; cld; ldx #255; txs
-        0xa9, 0, 0x8d, 0, 0x20, 0x8d, 1, 0x20, // disable NMI/rendering
-        0xad, 1, 0x60, 0x8d, 4, 0x60, // previous persisted B -> boot marker
-        0xa9, 1, 0x8d, 0x15, 0x40, // pulse enable
-        0xa9, 0xbf, 0x8d, 0, 0x40, // duty/constant volume
-        0xa9, 0x40, 0x8d, 2, 0x40,
-        0xa9, 0x08, 0x8d, 3, 0x40});
-  auto loop = code.size();
-  emit({0xad, 2, 0x20, 0x10, 0xfb, // wait for vblank
-        0xa9, 1, 0x8d, 0x16, 0x40, 0xa9, 0, 0x8d, 0x16, 0x40,
-        0xad, 0x16, 0x40, 0x29, 1, 0x85, 0, 0x8d, 0, 0x60, // A
-        0xad, 0x16, 0x40, 0x29, 1, 0x85, 1, 0x8d, 1, 0x60, // B
-        0xee, 2, 0x60,
-        0xa9, 0x3f, 0x8d, 6, 0x20, 0xa9, 0, 0x8d, 6, 0x20,
-        0xa5, 0, 0x0a, 0x05, 1, 0xaa}); // x = A*2+B
-  auto lookup = code.size();
-  emit({0xbd, 0, 0, 0x8d, 7, 0x20, // palette[x] -> $2007
-        0xa9, 0, 0x8d, 6, 0x20, 0x8d, 6, 0x20, // reset PPU address
-        0x4c, uint8_t(loop), uint8_t(0xe0 + (loop >> 8))});
-  code[lookup + 1] = uint8_t(code.size());
-  code[lookup + 2] = uint8_t(0xe0 + (code.size() >> 8));
-  emit({0x0f, 0x16, 0x21, 0x2a});
-  std::copy(code.begin(), code.end(), rom.begin() + 16 + 0x6000);
-  for(size_t vector = 0x7ffa; vector <= 0x7ffe; vector += 2) {
-    rom[16 + vector] = 0; rom[16 + vector + 1] = 0xe0;
-  }
-  return rom;
-}
-
-int main() {
-  auto dir = fs::current_path() / ("ares-nes-smoke-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+extern "C" int clover_nes_smoke(const char* artifact_root, char* error, size_t error_size) {
+  if(error && error_size) error[0] = '\0';
+  fs::path dir;
   try {
+    if(!artifact_root || !*artifact_root) throw std::invalid_argument("artifact root must be non-empty");
+    fs::path root(artifact_root);
+    if(!root.is_absolute()) throw std::invalid_argument("artifact root must be absolute");
+    dir = root / ("ares-nes-smoke-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(dir);
     auto path = dir / "test.nes", saves = dir / "saves";
-    auto rom = homebrew(1, true);
+    auto rom = clover::test_fixture::nes_homebrew(1, true);
     write(path, rom);
     clover::AresCore core;
     check(!core.load(dir / "disk.qd", saves, {}), "QD must fail without trying to open it");
@@ -125,7 +92,7 @@ int main() {
     check(!core.loadState(dir / "test.state"), "wrong cartridge state rejection"); core.unload();
     // Exercise fixed-bank startup and state serialization on every initial mapper.
     for(unsigned mapper : {0u, 1u, 2u, 3u, 4u, 9u, 184u}) {
-      write(path, homebrew(mapper, false, mapper == 2));
+      write(path, clover::test_fixture::nes_homebrew(mapper, false, mapper == 2));
       check(core.load(path, dir / "volatile", {}), "mapper " + std::to_string(mapper) + ": " + core.error());
       check(frames(0) != frames(1 << 8), "mapper input/video " + std::to_string(mapper));
       check(core.saveState(dir / "mapper.state"), core.error());
@@ -135,17 +102,17 @@ int main() {
       check(entry.path().extension() != ".ram", "volatile RAM must not persist");
     auto reject = [&](Bytes bad, const char* reason) { write(path, bad); check(!core.load(path, saves, {}), reason); };
     reject(Bytes(8), "short header");
-    rom = homebrew(0); rom.pop_back(); reject(rom, "truncated ROM");
-    rom = homebrew(0); rom.push_back(0); reject(rom, "trailing ROM");
-    rom = homebrew(0); rom[6] |= 4; reject(rom, "trainer");
-    rom = homebrew(0); rom[7] = 8; reject(rom, "NES 2.0");
-    rom = homebrew(0); rom[7] = 1; reject(rom, "Vs console");
-    rom = homebrew(0); rom[6] = 0x50; reject(rom, "unsupported mapper");
-    rom = homebrew(0); rom[6] |= 8; reject(rom, "unsupported four screen");
-    rom = homebrew(3, false, true); reject(rom, "CNROM without CHR ROM");
-    rom = homebrew(4); rom[6] |= 8; write(path, rom);
+    rom = clover::test_fixture::nes_homebrew(0); rom.pop_back(); reject(rom, "truncated ROM");
+    rom = clover::test_fixture::nes_homebrew(0); rom.push_back(0); reject(rom, "trailing ROM");
+    rom = clover::test_fixture::nes_homebrew(0); rom[6] |= 4; reject(rom, "trainer");
+    rom = clover::test_fixture::nes_homebrew(0); rom[7] = 8; reject(rom, "NES 2.0");
+    rom = clover::test_fixture::nes_homebrew(0); rom[7] = 1; reject(rom, "Vs console");
+    rom = clover::test_fixture::nes_homebrew(0); rom[6] = 0x50; reject(rom, "unsupported mapper");
+    rom = clover::test_fixture::nes_homebrew(0); rom[6] |= 8; reject(rom, "unsupported four screen");
+    rom = clover::test_fixture::nes_homebrew(3, false, true); reject(rom, "CNROM without CHR ROM");
+    rom = clover::test_fixture::nes_homebrew(4); rom[6] |= 8; write(path, rom);
     check(core.load(path, saves, {}), core.error()); frames(0); core.unload();
-    rom = homebrew(0); rom[9] = 1; write(path, rom);
+    rom = clover::test_fixture::nes_homebrew(0); rom[9] = 1; write(path, rom);
     check(core.load(path, saves, {}), core.error()); frames(0); core.unload();
     auto* api = clover_ares_create(); check(api != nullptr, "C ABI create");
     check(clover_ares_load(api, utf8(path).c_str(), utf8(saves).c_str(), "", ""), clover_ares_error(api));
@@ -156,7 +123,22 @@ int main() {
     std::cout << "PASS: NES mappers 0,1,2,3,4,9,184; video, A/B, pulse audio, deterministic states, battery/volatile RAM, PAL, C ABI and rejection checks\nArtifacts: " << dir << '\n';
     return 0;
   } catch(const std::exception& e) {
-    std::cerr << "FAIL: " << e.what() << "\nArtifacts: " << dir << '\n';
+    if(error && error_size) { std::snprintf(error, error_size, "%s", e.what()); error[error_size - 1] = '\0'; }
+#ifndef CLOVER_SMOKE_EMBEDDED
+    std::cerr << "FAIL: " << (error && error_size ? error : e.what()) << (dir.empty() ? "" : "\nArtifacts: " + dir.string()) << '\n';
+#endif
+    return 1;
+  } catch(...) {
+    if(error && error_size) { std::snprintf(error, error_size, "unknown exception"); error[error_size - 1] = '\0'; }
+#ifndef CLOVER_SMOKE_EMBEDDED
+    std::cerr << "FAIL: " << (error && error_size ? error : "unknown exception") << (dir.empty() ? "" : "\nArtifacts: " + dir.string()) << '\n';
+#endif
     return 1;
   }
 }
+#ifndef CLOVER_SMOKE_EMBEDDED
+int main() {
+  char error[1024] = {};
+  return clover_nes_smoke(fs::current_path().string().c_str(), error, sizeof(error));
+}
+#endif

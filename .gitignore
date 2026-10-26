@@ -80,3 +80,15 @@ __pycache__/
 .env.*
 .idea/
 .vscode/
+
+# Apple signing material and local Xcode archives/results are never source.
+*.p12
+*.pfx
+*.pem
+*.key
+*.mobileprovision
+*.ipa
+*.xcarchive/
+*.xcresult/
+*.xcuserdata/
+*.xcuserstate

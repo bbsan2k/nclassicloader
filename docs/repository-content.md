@@ -2,7 +2,8 @@
 
 This repository tracks the Rust frontend/importer, the ares C++ bridge and
 execution core, a small Objective-C++ macOS menu adapter, tests, and build
-support for SDL3/ares.
+support for SDL3/ares, plus the Apple UIKit/SDL host and content-free browser
+transfer interface.
 
 Do not commit console kernel/filesystem images, commercial ROMs, firmware,
 extracted console programs, artwork, console fonts, language tables, audio,
@@ -31,3 +32,29 @@ Japan, EU, and US flags are sourced SVG assets under the MIT license in
 `rust/assets/flags/`; their attribution and notice are retained for distribution.
 Controller illustrations are authored drawing code. Generated ICNS/PNG and
 platform archives stay in ignored build/distribution directories, not Git.
+
+## Before publishing
+
+```sh
+python3 scripts/test-repository.py
+python3 scripts/check-repository.py --history
+
+# After deliberately staging the reviewed source changes:
+python3 scripts/check-repository.py --staged
+git diff --cached --check
+git diff --cached --stat
+```
+
+The checker inspects tracked files plus nonignored source candidates, or the
+actual Git index with `--staged`. `--history` also examines blobs reachable from
+local refs: deleting a file from the working tree does not remove it from Git
+history. It checks disallowed payload paths/extensions, unexpected binaries,
+oversized source files, selected credential patterns, conflict markers,
+unpinned external workflow actions and relative Markdown links. A shallow Git
+checkout is rejected when a history audit is requested. It never reads ignored input images/build trees or
+rewrites history, and never prints a matched credential value.
+
+This is a limited safeguard, not a complete secret scan, copyright review or
+publication authorization. Inspect staged changes yourself. If a secret or
+restricted asset was previously committed, stop publication, rotate affected
+credentials and agree on a history-cleanup plan before changing any refs.

@@ -9,6 +9,9 @@ Concrete cross-target probes and blockers are recorded in the
 [feasibility evidence](frontend-feasibility.md).
 The first asynchronous service contract is the
 [image-picker request/completion contract](frontend-effects.md).
+Apple-specific research and a proposed implementation sequence are in
+[the RetroArch/Provenance-informed host plan](apple-host-plan.md); it is not a
+claim of implemented platform support or a replacement for the gates below.
 
 ## Decision
 

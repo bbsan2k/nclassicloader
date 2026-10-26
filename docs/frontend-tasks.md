@@ -7,7 +7,263 @@ keep each task independently testable and revertible.
 
 ## Current evidence
 
-### Latest checkpoint — 2026-10-25 (L21ao–ax, ten chunks)
+### Apple runtime checkpoint — 2026-10-25
+
+**Repository publication polish — 2026-10-26:** the public overview now describes
+Files-first iOS and browser-based tvOS correctly. Contribution/security/reporting
+guides, a documentation index, changelog and [publication checklist](publishing.md)
+are in place. Content/index/history audits, immutable workflow action references,
+portable/browser tests and Apple compile/link CI are configured. Apple bundles
+include complete native/Rust/font/flag notices with package-content verification.
+Apple source formatting is standardized, and six native CTest targets now include
+the shared input/touch and callable core-entry checks. Current local preparation
+evidence is recorded in the checklist; hosted CI and physical-device gates remain
+open. Publication requires explicit owner approval; no release tags or history
+rewrites are part of this preparation.
+
+**Multi-collection focus correction (current, verified):** tvOS
+remote Select now activates the focused collection, never a gesture's pointer
+location. Pointer taps use a separate touch-only recognizer. Preferred focus is
+remembered by collection identity instead of always choosing the first row;
+one-shot focus requests clear on the actual focus callback, not the next poll.
+Status/job/pairing revisions no longer reload identical collection rows. SDL
+Up/Down fallback routes to native focus, and duplicate opens are latched while
+the worker validates a selected collection. Native collection screens no longer
+render/present the hidden SDL preview underneath UIKit; the profile host requests
+60 Hz callbacks. Region/version details distinguish imports on both platforms.
+Native SDL navigation uses a bounded, generation-checked ordered key queue rather
+than coalesced direction flags, preserving rapid input order. The transfer runner
+accepts `--extra-image` to verify two real imports, movement, focus stability
+across status/credential updates, correct menu identity, rapid input and return
+focus. Both iOS multi-import runs pass. The tvOS test found a synchronous UIKit
+default-focus callback overwriting the second-row return target; restoration now
+uses a captured identity on the next main-queue turn, guarded against late work.
+The complete tvOS test passes, including rapid alternating keys, both menu
+identities, both return targets, stable row reload counts, gameplay and cold
+restart. Evidence: `tvos/multi-collection-verified.log` and the corresponding
+`multi-collection-verified` archive. All 25 runner tests and browser-page checks
+pass; the latest iOS build also passes. Existing previews were updated in place:
+iOS `655F524C-146A-4E7F-A30D-6B269917049A` (96 files unchanged), tvOS
+`DD4A8779-A717-434E-8CBB-4E91820D6AD9` (192 files unchanged, Japan/USA collections).
+The test-only tvOS device `C91F6B4C-4EE8-401E-8D15-8044430925E3` is also retained.
+Actual remote/controller responsiveness still awaits user/device confirmation.
+
+**Files-first iOS / browser polish (current):** iOS now uses a native, system-styled
+Files import/collection screen with an empty state and import progress/cancel.
+It never starts the LAN listener and has no URL, PIN, QR or TV transfer panel.
+The browser transfer page remains for tvOS, with responsive two-step cards,
+connection/file details, upload/import progress, clear limits and local-network
+warnings. Browser tests cover pairing/revocation, file size/type validation,
+progress, cancellation and reconnect; all 24 runner tests and seven Rust transfer
+tests pass. WebKit mobile/desktop snapshots have no horizontal overflow. Fresh
+iOS Files/SNES and tvOS browser/Classic NES/SNES end-to-end checks pass in
+`files-first-run.log` and `web-refresh*-run.log`. All 18 iOS checkpoints report no
+LAN listener, including initial entry, nested returns and cold restart. Native
+screenshot checks now measure contrast rather than requiring a dark/colorful
+screen and reject solid black/white frames. Earlier iOS LAN screenshots/checkpoints
+are superseded; actual external Files-provider interaction remains a manual gate.
+
+**Classic navigation correction — 2026-10-26 (current):** the native initial
+screen selects collections, not games. A callback adapter embeds the existing
+Rust `ui::App` renderer/navigation with the imported Classic assets. It owns no
+core, desktop pacer, second event loop, controller handle or import worker.
+Confirm emits a game ID to the existing Apple host; Stop/Menu/Escape returns to
+Classic, and root Back (or iOS Collections) returns to acquisition and re-pairs.
+LAN transfer remains disabled while in Classic. Embedded menu audio, suspend
+slots and desktop file dialogs remain explicitly unsupported. Desktop/embedded
+exact-pixel comparisons and no-core navigation pass for both NES and SNES.
+Current host tests pass: 313 native+game unit tests, 21 ignored, plus 137 integration
+tests and 24 runner tests; browser checks, formatting and warnings-denied Clippy
+also pass. Default/portable suites pass 178/177 unit tests. Fresh NES and SNES
+end-to-end flows pass on both iOS and tvOS. Both nine-mode regression reruns pass
+(touch, library, import, input, lifecycle, interruptions, game, preview, core).
+Evidence is archived under platform `classic-{nes,snes}` and
+`classic-regressions.log`. The direct native-game/extra Play flow in the historical checkpoints
+below is superseded; physical-device and tvOS durability gates remain open.
+Fresh iOS interactive preview `655F524C-146A-4E7F-A30D-6B269917049A` is open in
+Device Hub and retained at the collection/import screen. It has a fresh sandbox;
+older retained simulators and their imported libraries were not altered. The
+launch log is `.build/apple-app/ios/classic-interactive.log`. All work remains
+uncommitted/unpushed, with SDL unmodified.
+
+**tvOS activation follow-up:** a user found that the focused collection did not
+activate with Select/Return. Earlier probes requested focus but opened by ID,
+missing the production event path. SDL-delivered Return now activates only a
+focused native collection, with foreground/focus/busy guards; a native Select/tap
+recognizer shares the same row action. Returning to collections requests table
+focus. The tvOS transfer probe now opens/reopens via queued SDL Return events,
+not a direct prepare-by-ID call, and the full SNES flow passes
+(`.build/apple-app/tvos/selection-run.log`). Both platform builds and 24 runner
+tests pass. The existing interactive tvOS simulator
+`DD4A8779-A717-434E-8CBB-4E91820D6AD9` was updated in place; all 96 existing
+collection/save file digests were verified unchanged. Actual user remote/click
+delivery still awaits confirmation.
+
+**tvOS launcher / short pairing follow-up — 2026-10-26:** the native tvOS UI now
+separates library cards/counts/empty state from a dedicated transfer panel, with
+larger text, mint focus highlighting, a grouped six-digit code and explicit
+expiry/New code controls. Both platforms exchange this random ten-minute PIN via
+`POST /pair` for a separate 128-bit browser bearer credential. Five incorrect
+attempts lock pairing globally for one minute. Refresh/background/gameplay
+invalidate sessions; refresh is unavailable during an active import. QR codes
+carry the six-digit PIN, not the long session secret. The web form preserves
+leading zeroes and accepts the displayed space separator. New probe coverage
+checks wrong-code rejection, session exchange, New code invalidation and actual
+native tvOS focus requests; hardware remote delivery remains a separate gate.
+Credential refresh keeps the existing browser URL and rejects refresh atomically
+while an upload/import is active. Rust tests cover the five-attempt lockout, expiry,
+leading zeroes, old-session revocation and the import/refresh race. The Node page
+test covers spaced PIN entry, QR auto-pair and disabling upload on lost sessions.
+NES/SNES pairing/upload/play flows pass on both simulators, including New code,
+old-session rejection and native tvOS focus highlighting. Latest artifacts are
+under `.build/apple-app/{ios,tvos}/launcher-{nes,snes}` and `launcher-verified.log`.
+All 313 native+game unit tests (20 ignored), 137 integration tests, 24 runner tests,
+the Node page test, formatting and warnings-denied Clippy pass. Updated interactive
+tvOS preview `71257A69-1D87-4AEF-9B9E-825A76F58116` is retained in Device Hub;
+existing user simulators/libraries were not replaced or deleted. Its compositor
+QR also decodes successfully. Work remains uncommitted/unpushed.
+
+**2026-10-26 browser-transfer follow-up:** ordinary launches on both platforms now
+start in a native Classic profile/game launcher with a local upload URL, paired QR
+code and progress. A foreground-only Rust HTTP service streams at most 1 GiB into
+exclusive temporary files and calls the existing cancellable SquashFS/profile
+importer. It has one job/four clients, bounded headers/timeouts, strict local Host
+and Origin checks, 128-bit browser sessions and no arbitrary file/game-control endpoints.
+Background closes the listener/cancels work and invalidates pairing; gameplay also
+disables transfers. Imported NES/SNES catalogs are listed with title/availability;
+opening revalidates a profile on a worker, then creates the existing ares session
+on the callback thread. Explicit Play is still required. SNES now uses bounded
+dynamic frame geometry and the profile's verified SMP firmware; games requiring
+external coprocessor firmware remain unavailable. The Apple build includes XZ.
+
+Real HTTP image-upload probes cover invalid preservation, identity, explicit-only
+play, video/audio bounds, background re-pairing, source immutability, owned-stage
+cleanup and cold restart into the launcher. The interactive runner now supports
+tvOS and Xcode 27 Device Hub; `--app preview --interactive` is the user path,
+not `--app library` (which ends in the synthetic color fixture). This remains an
+initial native launcher, not the complete extracted Classic skin/menu UI. No
+off-device save backup, tvOS durability, device signing or physical networking/
+remote/finger-delivery certification is implied. See the Apple README for commands
+and `.build/apple-app/{ios,tvos}/transfer-*` for local evidence.
+The iOS launcher also supports `.hsqs` through Files, using a coordinated,
+security-scoped read-only descriptor and a single-use Arc-backed worker lease.
+Local imports and existing-profile launches work without a LAN listener. Unit
+tests cover cancellation/shutdown lease lifetime and offline opening; sandbox
+injection tests do not certify real external-provider selection. Metadata is
+bounded to 64 scanned entries/192 KiB of projected profile rows with a limit
+warning. Public SDL hints enable native tvOS focus in the launcher; Menu/Escape
+returns from gameplay. SDL remains unmodified.
+Verification: NES and SNES image-transfer flows pass on both simulators, including
+coordinated local Files reimport on iOS. Both nine-mode regression matrices pass.
+QR codes decode from compositor captures. All 312 native+game unit tests (20
+ignored), 137 integration tests, six transfer-specific tests, 24 runner tests,
+warnings-denied Clippy and normal/ASan/UBSan input tests pass. Default/portable
+remain 178/177 unit tests with 137 integration tests each. Current transfer
+artifacts are also archived in each platform's `transfer-nes` / `transfer-snes`
+directories. Interactive tvOS device `7B07C402-037B-4B97-A38B-38E59B160D27` was
+launched through Device Hub and retained with an empty real upload launcher; do
+not confuse it with the user's older retained color-fixture simulator or delete
+either as part of ordinary test cleanup. No commits or pushes were made.
+
+After the extraction commit `85a4394`, separate UIKit generated-core checks and
+the SDL/Rust shared-scene app pass on both iOS and tvOS simulators. The callback
+host now also has a **generated NES video/audio mode** (`--app game`): the shared
+self-authored fixture feeds the existing thread-affine `AresSession`, copied
+video uploads and a bounded SDL float-stereo stream. Core creation, stepping and
+destruction stay on the callback thread. Elapsed-time pacing caps work at three
+frames per callback, discards excess debt and is tested at 50/60/120 Hz. Audio
+input buffering is capped at 100 ms; injected pause clears it and neutralizes
+input, foreground alone stays paused, and explicit resume resets the clock.
+
+The runner checks run-tagged core/video/audio/lifecycle receipts and independent
+compositor screenshots. Generated-game receipts require changing core video,
+finite non-silent audio, started/draining SDL buffering and bounded queue/work.
+The desktop SDL game test additionally compares uploaded stage pixels and
+reopens the core after teardown. These are simulator/transport and injected
+lifecycle tests, **not physical-device sound, OS interruption, controller/remote,
+real-content import or durable-save certification**.
+
+Current checks: 178 default / 177 portable / 313 native+game unit tests and
+137 integration tests per configuration; warnings-denied Clippy and selected SDL
+tests. Earlier Apple extraction regressions also passed all 132 desktop
+snapshots, three-system suspend/navigation and release SNES/NES audio checks.
+See [probe reproduction](../portable/apple/README.md),
+[runtime evidence](frontend-feasibility.md) and [remaining plan](apple-host-plan.md).
+Apple work remains uncommitted and unpushed. S02, full frontend target passes,
+L21/L22, S07, Checkpoint C, physical devices, ingestion and tvOS save recovery
+remain separate gates.
+
+Lifecycle follow-up adds a main-thread Rust-entry gate: SDL's immediate lifecycle
+events can pause/clear the core audio before display callbacks stop. Reentrant
+delivery is deferred until the active Rust boundary returns; off-thread delivery
+is scheduled on the main thread. `--app lifecycle` drives two actual OS
+Settings/foreground cycles and observes fresh event counters, stable host/core
+identity, frozen frames, neutral input and empty audio while paused. Only explicit
+resume is sandbox-injected. Audio-session interruptions and physical-device
+behavior remain separate from this background/foreground simulator gate.
+
+Audio follow-up adds an `AVAudioSession` interruption observer without replacing
+SDL's configuration or observer. Begin pauses/clears input and audio and latches a
+Rust resume blocker. End clears that blocker but does not resume, even when
+`ShouldResume` is present; explicit resume resets pacing and re-primes audio.
+`--app interruptions` tests two injected notification cycles through the actual
+observer path, including a blocked resume attempt. These are notification/policy
+tests, not OS-issued calls/Siri, route-reset or physical-device evidence. The
+observer is removed on teardown; callbacks never borrow the core off-thread.
+
+Input follow-up replaces the shared held-button mask with bounded source-aware
+state. SDL gamepads are opened/rescanned/closed on the owner thread; keyboard,
+each pad and touch device/finger identities merge without cross-source releases.
+Disconnect/remap clears the affected device, stick directions use hysteresis and
+opposites neutralize. Focus loss, background and interruption clear held input;
+independent synchronized blockers prevent stale key repeat from resuming play.
+The new standalone C++/SDL test uses a virtual controller; `--app input` adds
+twelve simulator event-to-core checks. Physical controllers/remote input, player
+assignment and physical touch delivery remain open; the alpha overlay follows below.
+
+**iOS-first raw-NES alpha:** a UIKit Files-picker service now feeds bounded,
+single-flight coordinated staging and the shared Rust NES validator/content store.
+Main-thread commands alone load/play/stop the existing ares host; loads stay paused
+until explicit Play. iOS uses Application Support, while tvOS staging tests use
+evictable Caches and expose no Files picker. Cancellation invalidates picker/job
+identity, ignores delayed selection/results and never transfers a session to a
+worker. Reimport preserves content/save identity. This is raw NTSC iNES only,
+separate from Classic profile/image importing. The shared runtime/store is tested
+on both simulators; iOS additionally exercises picker presentation/cancel, with
+source selection injected from the probe sandbox. Provider selection, device
+signing, the complete Classic shared frontend/profile flow and durable
+background/restart recovery remain open. No SDL changes or commits were made.
+
+**Owned library and iOS touch follow-up:** interactive launches use a real
+hash-labelled cartridge scene, not synthetic cards. Bounded read-only scans skip
+invalid entries; selected digests are freshly revalidated before opening. Both
+simulators pass source removal/cold process restart, identical rendered library,
+stored reopen/SRAM retention and corrupt-entry exclusion/restoration probes.
+iOS now has a safe-area UIKit D-pad/A/B/Start/Select overlay with independent
+contacts, dragging, cancellation, resize/focus/interruption cleanup and explicit
+resume. Seventeen injected checkpoints pass on both simulators; tvOS tests shared
+geometry/contact handling without a touch UI. Real finger delivery remains open.
+Standalone SDL/input/geometry tests pass normally and under ASan/UBSan; all 21
+runner unit tests and warnings-denied Clippy pass. See `library-*`, `touch-*` and
+`touch-matrix.log` under `.build/apple-app/{ios,tvos}` for current evidence.
+All nine modes (`touch`, `library`, `import`, `input`, `lifecycle`,
+`interruptions`, `game`, `preview`, `core`) pass on both simulators.
+Interactive runs attempt Simulator GUI launch and explicitly warn if headless;
+each runner invocation creates a fresh device/container, so it does not inherit
+another retained simulator's library. Device signing, provider selection, complete
+profiles, periodic saves and tvOS off-device durability remain separate gates.
+
+### Apple host research — 2026-10-25
+
+[The Apple host plan](apple-host-plan.md) compares pinned RetroArch/Provenance
+source with this repository and proposes early app-hosted core/runtime probes,
+then an SDL-backed Apple callback host. It includes a first-ten-slice plan,
+current linking/toolchain blockers and separate iOS ingestion/tvOS recovery gates.
+This is a proposal, not completed S02/S03/S07/Checkpoint C or app support.
+No simulator runtime or Rust target was installed during research; source-only
+reference inspection is not an upstream-app runtime test.
+
+### Extraction checkpoint — 2026-10-25 (L21ao–ax, ten chunks)
 
 Ten chunks extract the generic modal panel (`render_panel`): **L21ao** row
 viewport policy; **L21ap** bound row commands; **L21aq** footer commands;

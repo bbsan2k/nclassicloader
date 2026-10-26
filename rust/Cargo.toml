@@ -22,10 +22,13 @@ path = "src/lib.rs"
 crate-type = ["rlib", "staticlib"]
 
 [features]
+apple-preview = ["sdl-renderer"]
+apple-game = ["apple-preview", "native-ares", "dep:fontdue", "dep:resvg"]
 default = ["xz"]
 xz = ["dep:xz2"]
 native-ares = []
-native-app = ["dep:sdl3", "dep:sdl3-sys", "dep:fontdue", "dep:resvg", "native-ares"]
+sdl-renderer = ["dep:sdl3", "dep:sdl3-sys"]
+native-app = ["sdl-renderer", "dep:fontdue", "dep:resvg", "native-ares"]
 
 [[bin]]
 name = "clover-rust"

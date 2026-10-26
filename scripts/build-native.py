@@ -21,7 +21,7 @@ def main():
     run([sys.executable, ROOT / "scripts/bootstrap-portable.py"], env=env)
     run([sys.executable, ROOT / "scripts/test-apple-compat.py"], env=env)
     run(["cmake", "-S", ROOT, "-B", BUILD, "-DCMAKE_BUILD_TYPE=Release",
-         "-DCLOVER_BUILD_TESTS=ON"], env=env)
+         "-DCLOVER_BUILD_TESTS=ON", "-DCLOVER_BUILD_APP_SMOKE=ON"], env=env)
     run(["cmake", "--build", BUILD, "--config", "Release", "--parallel", "3"], env=env)
     run(["ctest", "--test-dir", BUILD, "-C", "Release", "--output-on-failure"], env=env)
     run(["cmake", "--install", BUILD, "--config", "Release", "--prefix", BUILD / "native-package"], env=env)
